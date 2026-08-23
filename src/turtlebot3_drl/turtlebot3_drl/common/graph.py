@@ -7,7 +7,7 @@ from turtlebot3_drl.drl_environment.reward import SUCCESS
 from .settings import GRAPH_DRAW_INTERVAL, GRAPH_AVERAGE_REWARD
 from matplotlib.ticker import MaxNLocator
 
-matplotlib.use('TkAgg')
+matplotlib.use('Agg')
 class Graph():
     def __init__(self):
         plt.show()

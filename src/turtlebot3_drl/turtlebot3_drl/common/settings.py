@@ -2,7 +2,7 @@
 #                           GENERAL SETTINGS                            #
 # ===================================================================== #
 
-ENABLE_BACKWARD          = False    # Enable backward movement of the robot
+ENABLE_BACKWARD          = True    # Enable backward movement of the robot
 ENABLE_STACKING          = False    # Enable processing multiple consecutive scan frames at every observation step
 ENABLE_VISUAL            = False    # Meant to be used only during evaluation/testing phase
 ENABLE_TRUE_RANDOM_GOALS = False    # If false, goals are selected semi-randomly from a list of known valid goal positions
@@ -35,7 +35,7 @@ THRESHOLD_COLLISION         = 0.13  # meters
 THREHSOLD_GOAL              = 0.20  # meters
 
 OBSTACLE_RADIUS             = 0.16  # meters
-MAX_NUMBER_OBSTACLES        = 6
+MAX_NUMBER_OBSTACLES        = 6 #12
 ENABLE_MOTOR_NOISE          = False # Add normally distributed noise to motor output to simulate hardware imperfections
 
 # --- REAL ROBOT ENVIRONMENT SETTINGS ---
