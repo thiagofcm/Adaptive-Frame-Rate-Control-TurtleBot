@@ -13,8 +13,13 @@ goal, and recorded moving-obstacle positions. Pass --lidar to also overlay
 the LiDAR point cloud.
 
 Usage:
-    python3 make_video.py path/to/episode_0003 -o episode_0003.mp4
-    python3 make_video.py path/to/episode_0003 --lidar --fps 20
+    python3 make_video.py --eval-dir FixedFPS/eval/fixed_0.2Hz --n-ep 3
+    python3 make_video.py --eval-dir FixedFPS/eval/fixed_0.2Hz --n-ep 3 --lidar --fps 20
+
+--eval-dir is the rate/run folder (whatever record_episode.py's --out-dir
+was), and --n-ep selects episode_%04d underneath it -- the example above
+reads FixedFPS/eval/fixed_0.2Hz/episode_0003. By default the rendered MP4
+is written inside that same episode folder; pass -o/--output to override.
 """
 import argparse
 import json
@@ -131,8 +136,12 @@ def lidar_points(x, y, yaw, ranges, max_range):
 
 def main():
     parser = argparse.ArgumentParser(description="Render an MP4 from a recorded episode.")
-    parser.add_argument("episode_dir", help="Path to an episode_NNNN directory")
-    parser.add_argument("-o", "--output", default=None, help="Output MP4 path")
+    parser.add_argument("--eval-dir", required=True,
+                         help="Rate/run folder containing episode_NNNN dirs, e.g. FixedFPS/eval/fixed_0.2Hz")
+    parser.add_argument("--n-ep", type=int, required=True,
+                         help="Episode number, e.g. 3 -> <eval-dir>/episode_0003")
+    parser.add_argument("-o", "--output", default=None,
+                         help="Output MP4 path (default: inside the episode folder itself)")
     parser.add_argument("--fps", type=int, default=30, help="Output video frame rate")
     parser.add_argument("--dpi", type=int, default=110)
     parser.add_argument("--lidar", dest="lidar", action="store_true", default=False,
@@ -146,13 +155,20 @@ def main():
     if shutil.which("ffmpeg") is None:
         sys.exit("ffmpeg not found on PATH -- install it (e.g. apt-get install ffmpeg) and retry.")
 
-    episode_dir = args.episode_dir.rstrip("/")
+    eval_dir = args.eval_dir.rstrip("/")
+    episode_dir = os.path.join(eval_dir, f"episode_{args.n_ep:04d}")
+    if not os.path.isdir(episode_dir):
+        sys.exit(f"{episode_dir}: no such episode directory")
     traj, lidar, obstacles, meta = load_episode(episode_dir)
     if len(traj) == 0:
         sys.exit(f"{episode_dir}: trajectory.csv has no rows, nothing to render.")
     walls = load_walls(episode_dir)
 
-    output = args.output or (os.path.basename(episode_dir) + ".mp4")
+    # By default, write the video into the episode folder itself (the same
+    # folder the CSV/npz/json inputs came from), named after --eval-dir so
+    # it stays identifiable if later collected elsewhere alongside videos
+    # from other rates/runs.
+    output = args.output or os.path.join(episode_dir, "episode_" + f"{args.n_ep:04d}" + ".mp4")
 
     timebase = pick_timebase(traj, lidar)
     traj_t = traj[timebase].to_numpy()

@@ -227,7 +227,7 @@ class DRLEnvironment(Node):
         elif self.time_sec >= self.episode_deadline:
             self.succeed = TIMEOUT
         # Tumble
-        elif self.robot_tilt > 0.06 or self.robot_tilt < -0.06:
+        elif self.robot_tilt > 0.5 or self.robot_tilt < -0.5:
             self.succeed = TUMBLE
         if self.succeed is not UNKNOWN:
             self.stop_reset_robot(self.succeed == SUCCESS)

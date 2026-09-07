@@ -4,3 +4,18 @@ build/
 install/
 log/
 tmux*
+
+# Generated FixedFPS experiments
+FixedFPS/eval/
+
+# Generated AdaptiveFPS experiments
+# AdaptiveFPS/eval/
+# AdaptiveFPS/runs/
+
+# Generated artifacts
+*.npz
+*.mp4
+
+# Python cache
+__pycache__/
+*.pyc

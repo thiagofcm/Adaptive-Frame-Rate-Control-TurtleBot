@@ -1,0 +1,11 @@
+docker ps -a
+
+docker exec -it <container_name_or_id> bash
+
+tmux kill-session -t fixedfps
+
+tmux attach -t fixedfps
+
+to exit tmux Ctrl+B then D
+
+colcon build --packages-select turtlebot3_drl

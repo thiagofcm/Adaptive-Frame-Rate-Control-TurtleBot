@@ -1,0 +1,3 @@
+episode_index,dir,start_wall,end_wall,duration_s,odom_rows,scan_rows,obstacle_rows
+1,/home/turtlebot3_drlnav/evaluation_records/20260823-212402/episode_0001,1787520249.4080276,15.205925703048706,-1787520234.202102,733,733,4398
+2,/home/turtlebot3_drlnav/evaluation_records/20260823-212402/episode_0002,1787520266.209175,10.845932245254517,-1787520255.3632429,521,521,3126

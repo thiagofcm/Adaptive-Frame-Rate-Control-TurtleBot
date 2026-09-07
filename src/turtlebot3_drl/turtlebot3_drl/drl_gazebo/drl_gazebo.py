@@ -36,6 +36,14 @@ from ..drl_environment.drl_environment import ARENA_LENGTH, ARENA_WIDTH, ENABLE_
 from ..common.settings import ENABLE_TRUE_RANDOM_GOALS
 
 NO_GOAL_SPAWN_MARGIN = 0.3 # meters away from any wall
+
+# Deterministic Stage 9 goal order, for paired FixedFPS comparisons across
+# sensing rates: indices into generate_goal_pose()'s Stage 9 `goal_pose_list`.
+# Chosen so every consecutive pair (including the 17th -> 1st wraparound)
+# already satisfies the >= 2 minimum-distance constraint that the random
+# path enforces via retries -- see generate_goal_pose()'s early-return
+# Stage 9 branch, which therefore never needs to retry.
+STAGE9_GOAL_ORDER = [9, 11, 5, 3, 14, 15, 16, 12, 7, 10, 6, 1, 13, 2, 0, 4, 8]
 class DRLGazebo(Node):
     def __init__(self):
         super().__init__('drl_gazebo')
@@ -57,6 +65,7 @@ class DRLGazebo(Node):
 
         self.prev_x, self.prev_y = -1, -1
         self.goal_x, self.goal_y = 0.5, 0.0
+        self.goal_sequence_index = 0  # Stage 9 only: index into STAGE9_GOAL_ORDER, advances by exactly 1 per goal
 
         """************************************************************
         ** Initialise ROS publishers, subscribers and clients
@@ -84,7 +93,15 @@ class DRLGazebo(Node):
     def init_callback(self):
         self.delete_entity()
         self.reset_simulation()
-        self.publish_callback()
+        if self.stage == 9:
+            # Only Stage 9 is changed: route the very first goal through the
+            # same deterministic sequence used for every later Stage 9 goal,
+            # so episode 1 gets goal_pose_list[STAGE9_GOAL_ORDER[0]] instead
+            # of the hardcoded (0.5, 0.0) placeholder set in __init__().
+            # generate_goal_pose() calls publish_callback() itself.
+            self.generate_goal_pose()
+        else:
+            self.publish_callback()
         print("Init, goal pose:", self.goal_x, self.goal_y)
         time.sleep(1)
 
@@ -172,6 +189,24 @@ class DRLGazebo(Node):
 
 
     def generate_goal_pose(self):
+        if self.stage == 9:
+            # Deterministic Stage 9 path, for paired FixedFPS comparisons.
+            # Bypasses the retry loop below entirely (by returning before it)
+            # so exactly one STAGE9_GOAL_ORDER entry is consumed per call,
+            # never skipped or repeated, regardless of the distance check
+            # that loop performs for every other stage.
+            goal_pose_list = [[2.0, 2.0], [2.0, 1.5], [2.0, -0.5], [2.0, -1.0], [2.0, -2.0], [1.3, 1.0],
+                                [1.0, 0.3], [1.0, -2.0], [0.3, -1.0],  [0.0, 2.0], [0.0, -1.0], [-1.0, 1.0],
+                                    [-1.0, -1.2], [-2.0, 1.0], [-2.2, 0.0], [-2.0, -2.2], [-2.4, 2.4]]
+            self.prev_x = self.goal_x
+            self.prev_y = self.goal_y
+            goal_list_index = STAGE9_GOAL_ORDER[self.goal_sequence_index % len(STAGE9_GOAL_ORDER)]
+            self.goal_x = float(goal_pose_list[goal_list_index][0])
+            self.goal_y = float(goal_pose_list[goal_list_index][1])
+            self.goal_sequence_index += 1
+            self.publish_callback()
+            return
+
         self.prev_x = self.goal_x
         self.prev_y = self.goal_y
         tries = 0
@@ -183,7 +218,7 @@ class DRLGazebo(Node):
                 index = random.randrange(0, len(goal_pose_list))
                 self.goal_x = float(goal_pose_list[index][0])
                 self.goal_y = float(goal_pose_list[index][1])
-            elif self.stage == 8 or self.stage == 9 or self.stage == 12:
+            elif self.stage == 8 or self.stage == 12:
                 # --- Define static goal positions here ---
                 goal_pose_list = [[2.0, 2.0], [2.0, 1.5], [2.0, -0.5], [2.0, -1.0], [2.0, -2.0], [1.3, 1.0],
                                     [1.0, 0.3], [1.0, -2.0], [0.3, -1.0],  [0.0, 2.0], [0.0, -1.0], [-1.0, 1.0],

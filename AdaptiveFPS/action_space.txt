@@ -1,0 +1,47 @@
+FPS_ACTIONS = [0.2, 0.5, 1, 5, 10]
+
+multiplying by 5 we have: [1 2 5 25 50]
+
+FRAME COSTS: During navigation, the nav reward is sparte, ranging from -0.1 to -6.
+It only gets a high positive reward when reaches the goal: +2500.
+I am thinking in frame costs: [0.0 1.0 1.5 2.0 3.0]
+
+Doin the Math using the first episode of each fixed fps:
+At X FPS -> Total Nav reward - n_fresh_obs * frame cost
+
+At 0.2hz: 
+
+
+STRUCTURE:
+
+FixedFPS/
+├── scripts/
+│   ├── evaluate_fixed_sensing.py
+│   └── evaluate_sensing_reward.py
+│
+├── wrapper/
+│   └── environment_gated.py
+│
+├── rewards/
+│   └── sensing_reward.py
+│
+└── eval/
+    ├── fixed_0.25Hz/
+    ├── fixed_0.5Hz/
+    ├── fixed_1Hz/
+    ├── fixed_5Hz/
+    ├── fixed_10Hz/
+    └── fixed_50Hz/
+
+AdaptiveFPS/
+├── env/
+│   └── adaptive_sensing_env.py
+│
+├── rewards/
+│   └── sensing_reward.py
+│
+├── scripts/
+│   ├── train_ppo.py
+│   └── evaluate_adaptive.py
+│
+└── runs/

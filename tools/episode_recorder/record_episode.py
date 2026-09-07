@@ -39,6 +39,7 @@ from geometry_msgs.msg import Pose, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from rosgraph_msgs.msg import Clock
+from std_msgs.msg import Empty
 
 try:
     from turtlebot3_drl.common.settings import ARENA_LENGTH, ARENA_WIDTH
@@ -158,14 +159,24 @@ def load_world_geometry(base_path, stage):
 
 
 class Episode:
-    def __init__(self, index, goal_x, goal_y, start_wall, start_sim):
+    def __init__(self, index, goal_x, goal_y):
         self.index = index
         self.goal_x = goal_x
         self.goal_y = goal_y
-        self.start_wall = start_wall
-        self.start_sim = start_sim
-        self.end_wall = start_wall
-        self.end_sim = start_sim
+        # Timing origin is latched by on_episode_ready(), not at creation
+        # (creation happens at /goal_pose, which precedes the evaluator's
+        # handshake -- too early to be t=0). Both pairs below stay absolute
+        # epoch/sim-clock values; duration is tracked separately as a
+        # relative offset so the two are never subtracted from each other
+        # (see add_odom / write()).
+        self.ready = False
+        self.start_wall = None
+        self.start_sim = None
+        self.end_wall = None
+        self.end_sim = None
+        self.end_wall_rel = 0.0
+        self.end_sim_rel = None
+        self.latest_odom_msg = None  # cached continuously, pre- and post-READY
         self.trajectory_rows = []
         self.lidar_t_wall = []
         self.lidar_t_sim = []
@@ -186,9 +197,11 @@ class Episode:
             self.last_cmd_linear, self.last_cmd_angular,
             self.goal_x, self.goal_y,
         ))
-        self.end_wall = t_wall
+        self.end_wall_rel = t_wall
+        self.end_wall = (self.start_wall + t_wall) if self.start_wall is not None else None
         if t_sim is not None:
-            self.end_sim = t_sim
+            self.end_sim_rel = t_sim
+            self.end_sim = (self.start_sim + t_sim) if self.start_sim is not None else None
 
     def add_scan(self, t_wall, t_sim, ranges):
         self.lidar_t_wall.append(t_wall)
@@ -242,10 +255,13 @@ class Episode:
             yaw=np.array(self.obstacle_yaw, dtype=np.float64),
         )
 
-        duration_wall = self.end_wall - self.start_wall
-        duration_sim = None
-        if self.start_sim is not None and self.end_sim is not None:
-            duration_sim = self.end_sim - self.start_sim
+        # Both durations are already-relative offsets tracked directly by
+        # add_odom (end_wall_rel/end_sim_rel) -- never an absolute-minus-
+        # absolute subtraction, since start_wall/start_sim are absolute
+        # epoch/sim-clock values and mixing the two previously produced a
+        # nonsensical duration once any odom had been recorded.
+        duration_wall = self.end_wall_rel
+        duration_sim = self.end_sim_rel
 
         odom_wall_times = [row[0] for row in self.trajectory_rows]
         meta = {
@@ -307,6 +323,7 @@ class EpisodeRecorder(Node):
         self.create_subscription(Twist, "cmd_vel", self.on_cmd_vel, qos)
         self.create_subscription(Clock, "/clock", self.on_clock, QoSProfile(depth=10))
         self.create_subscription(Odometry, "obstacle/odom", self.on_obstacle_odom, qos)
+        self.create_subscription(Empty, "episode_ready", self.on_episode_ready, QoSProfile(depth=10))
 
         self.get_logger().info(f"episode_recorder: observational only, writing to {out_dir}")
 
@@ -332,17 +349,51 @@ class EpisodeRecorder(Node):
             self.get_logger().warning(f"could not record world geometry, continuing without it: {exc}")
 
     def on_clock(self, msg):
+        # Pure tracking -- the sim-time origin is latched explicitly in
+        # on_episode_ready(), not opportunistically here (that would set it
+        # before READY and reintroduce the same "too early" problem this
+        # fix removes for wall time).
         self.latest_sim_time = stamp_to_sec(msg.clock)
 
     def on_goal_pose(self, msg):
         if self.current is not None and self.current.trajectory_rows:
             self._finalize_current()
         self.episode_count += 1
-        now_wall = time.time()
-        self.current = Episode(self.episode_count, msg.position.x, msg.position.y,
-                                now_wall, self.latest_sim_time)
+        self.current = Episode(self.episode_count, msg.position.x, msg.position.y)
         self.get_logger().info(
-            f"episode {self.episode_count} started, goal=({msg.position.x:.2f}, {msg.position.y:.2f})")
+            f"episode {self.episode_count} goal received "
+            f"({msg.position.x:.2f}, {msg.position.y:.2f}); waiting for READY")
+
+    def on_episode_ready(self, msg):
+        """The evaluator publishes this exactly once per valid episode,
+        right before its first TD3 control step -- this is the canonical
+        t_wall=0/t_sim=0 origin, not /goal_pose arrival (which precedes the
+        evaluator's own reset/readiness handshake)."""
+        if self.current is None:
+            self.get_logger().warning("received /episode_ready with no pending episode; ignoring")
+            return
+        if self.current.ready:
+            self.get_logger().warning(
+                f"episode {self.current.index}: duplicate /episode_ready received; ignoring")
+            return
+        self.current.ready = True
+        self.current.start_wall = time.time()
+        self.current.start_sim = self.latest_sim_time
+        self.get_logger().info(f"episode {self.current.index} READY; origin latched")
+
+        odom = self.current.latest_odom_msg
+        if odom is not None:
+            yaw = quaternion_to_yaw(odom.pose.pose.orientation)
+            tilt = odom.pose.pose.orientation.y
+            self.current.add_odom(0.0, 0.0, odom.pose.pose.position.x,
+                                   odom.pose.pose.position.y, yaw, tilt)
+            self.get_logger().info(
+                f"initial trajectory pose: t_wall=0.000 x={odom.pose.pose.position.x:.3f} "
+                f"y={odom.pose.pose.position.y:.3f}")
+        else:
+            self.get_logger().warning(
+                f"episode {self.current.index}: no /odom cached at READY; "
+                f"first trajectory row will come from the next /odom message")
 
     def _sim_relative(self, stamp_sim):
         if self.current.start_sim is None:
@@ -356,6 +407,12 @@ class EpisodeRecorder(Node):
     def on_odom(self, msg):
         if self.current is None:
             return
+        # Cached unconditionally (pre- and post-READY) so on_episode_ready
+        # always has the latest synchronized pose available to write as the
+        # t_wall=0 trajectory row -- never a fabricated (0, 0).
+        self.current.latest_odom_msg = msg
+        if not self.current.ready:
+            return
         t_wall = time.time() - self.current.start_wall
         t_sim = self._sim_relative(stamp_to_sec(msg.header.stamp))
         yaw = quaternion_to_yaw(msg.pose.pose.orientation)
@@ -364,20 +421,20 @@ class EpisodeRecorder(Node):
                                msg.pose.pose.position.y, yaw, tilt)
 
     def on_scan(self, msg):
-        if self.current is None:
+        if self.current is None or not self.current.ready:
             return
         t_wall = time.time() - self.current.start_wall
         t_sim = self._sim_relative(stamp_to_sec(msg.header.stamp))
         self.current.add_scan(t_wall, t_sim, list(msg.ranges))
 
     def on_cmd_vel(self, msg):
-        if self.current is None:
+        if self.current is None or not self.current.ready:
             return
         t_wall = time.time() - self.current.start_wall
         self.current.set_cmd(msg.linear.x, msg.angular.z, t_wall)
 
     def on_obstacle_odom(self, msg):
-        if self.current is None:
+        if self.current is None or not self.current.ready:
             return
         t_wall = time.time() - self.current.start_wall
         t_sim = self._sim_relative(stamp_to_sec(msg.header.stamp))
