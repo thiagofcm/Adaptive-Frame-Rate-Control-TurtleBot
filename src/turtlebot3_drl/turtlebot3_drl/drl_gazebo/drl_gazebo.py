@@ -44,6 +44,23 @@ NO_GOAL_SPAWN_MARGIN = 0.3 # meters away from any wall
 # path enforces via retries -- see generate_goal_pose()'s early-return
 # Stage 9 branch, which therefore never needs to retry.
 STAGE9_GOAL_ORDER = [9, 11, 5, 3, 14, 15, 16, 12, 7, 10, 6, 1, 13, 2, 0, 4, 8]
+
+# For the FixedFPS/AdaptiveFPS sensing-rate study, three nodes independently
+# subscribe to /goal_pose (DRLEnvironment, the evaluator, and EpisodeRecorder).
+# /goal_pose uses volatile QoS with no history replay, and the very first
+# Stage 9 goal (published once, from init_callback() below, during __init__)
+# is a one-shot event with no resend -- if a required subscriber hasn't
+# finished DDS discovery yet when it fires, that subscriber misses it
+# forever, and nothing later (not even the evaluator's own bounded handshake
+# retries) can recover it. This wait therefore applies ONLY to that first
+# publication -- every later goal (published from task_succeed_callback/
+# task_fail_callback) is not affected, since by then every subscriber has
+# had the entire previous episode's duration to discover this publisher,
+# and discovery, once matched, persists for the life of the process.
+GOAL_POSE_REQUIRED_SUBSCRIBERS = 2
+GOAL_POSE_SUBSCRIBER_WAIT_TIMEOUT_S = 15.0
+
+
 class DRLGazebo(Node):
     def __init__(self):
         super().__init__('drl_gazebo')
@@ -93,6 +110,8 @@ class DRLGazebo(Node):
     def init_callback(self):
         self.delete_entity()
         self.reset_simulation()
+        if not self._wait_for_initial_goal_pose_subscribers():
+            return
         if self.stage == 9:
             # Only Stage 9 is changed: route the very first goal through the
             # same deterministic sequence used for every later Stage 9 goal,
@@ -104,6 +123,34 @@ class DRLGazebo(Node):
             self.publish_callback()
         print("Init, goal pose:", self.goal_x, self.goal_y)
         time.sleep(1)
+
+    def _wait_for_initial_goal_pose_subscribers(self):
+        """Block until GOAL_POSE_REQUIRED_SUBSCRIBERS have matched
+        self.goal_pose_pub (DDS discovery complete for each), or until
+        GOAL_POSE_SUBSCRIBER_WAIT_TIMEOUT_S elapses. Returns True once the
+        threshold is reached, False on timeout -- the caller must not
+        publish the initial goal on a False return, or the exact race this
+        exists to close would simply reappear."""
+        deadline = time.monotonic() + GOAL_POSE_SUBSCRIBER_WAIT_TIMEOUT_S
+        last_logged = -1
+        while True:
+            count = self.goal_pose_pub.get_subscription_count()
+            if count >= GOAL_POSE_REQUIRED_SUBSCRIBERS:
+                self.get_logger().info(
+                    f"/goal_pose subscribers ready: {count}/{GOAL_POSE_REQUIRED_SUBSCRIBERS} "
+                    f"-- publishing initial goal")
+                return True
+            if count != last_logged:
+                self.get_logger().info(
+                    f"Waiting for /goal_pose subscribers: {count}/{GOAL_POSE_REQUIRED_SUBSCRIBERS}")
+                last_logged = count
+            if time.monotonic() >= deadline:
+                self.get_logger().error(
+                    f"timed out after {GOAL_POSE_SUBSCRIBER_WAIT_TIMEOUT_S:.0f}s waiting for "
+                    f"/goal_pose subscribers ({count}/{GOAL_POSE_REQUIRED_SUBSCRIBERS} discovered) "
+                    f"-- NOT publishing the initial goal")
+                return False
+            rclpy.spin_once(self, timeout_sec=0.1)
 
     def publish_callback(self):
         # Publish goal pose

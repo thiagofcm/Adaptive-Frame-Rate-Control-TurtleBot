@@ -67,7 +67,7 @@ class DRLEnvironment(Node):
         self.done = False
         self.succeed = UNKNOWN
         self.episode_deadline = Infinity
-        self.reset_deadline = False
+        self.reset_deadline = True
         self.clock_msgs_skipped = 0
 
         self.obstacle_distances = [Infinity] * MAX_NUMBER_OBSTACLES

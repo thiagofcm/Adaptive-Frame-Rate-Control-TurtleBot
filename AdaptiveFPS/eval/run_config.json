@@ -1,0 +1,38 @@
+{
+  "model_run_name": "examples/td3_0_stage9",
+  "load_episode": 7400,
+  "algorithm": "td3",
+  "native_scan_hz": 50.0,
+  "gated_topic": "scan_gated",
+  "fps_requested": [
+    0.5
+  ],
+  "n_episodes": 5,
+  "stage": 9,
+  "sim_speed": 1,
+  "model_step_time": 0.0,
+  "num_scan_samples": 40,
+  "max_goal_distance": 5.939696961966999,
+  "settings": {
+    "ENABLE_BACKWARD": true,
+    "ENABLE_STACKING": false,
+    "ENABLE_MOTOR_NOISE": false,
+    "ENABLE_DYNAMIC_GOALS": false,
+    "ENABLE_TRUE_RANDOM_GOALS": false,
+    "SPEED_LINEAR_MAX": 0.22,
+    "SPEED_ANGULAR_MAX": 2.0,
+    "THRESHOLD_COLLISION": 0.13,
+    "THREHSOLD_GOAL": 0.2,
+    "EPISODE_TIMEOUT_SECONDS": 50,
+    "LIDAR_DISTANCE_CAP": 3.5
+  },
+  "state_vector_layout": {
+    "0:40": "normalized LiDAR ranges",
+    "40": "goal_distance_norm",
+    "41": "goal_angle_norm",
+    "42": "prev_action_linear",
+    "43": "prev_action_angular"
+  },
+  "note": "Gating /scan also gates the obstacle-distance term used for collision detection (drl_environment.py's obstacle_distance) and the reward's obstacle penalty (reward.py). This is intentional -- it's what the study is about. SUCCESS/TIMEOUT/TUMBLE remain odom/clock-driven and are not gated.",
+  "git_rev": null
+}

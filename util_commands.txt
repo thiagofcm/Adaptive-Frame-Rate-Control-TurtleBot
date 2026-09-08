@@ -8,4 +8,6 @@ tmux attach -t fixedfps
 
 to exit tmux Ctrl+B then D
 
+source /opt/ros/foxy/setup.bash
+source install/setup.bash
 colcon build --packages-select turtlebot3_drl

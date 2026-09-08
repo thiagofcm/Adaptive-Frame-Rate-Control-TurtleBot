@@ -115,14 +115,11 @@ EPISODE_CSV_FIELDS = [
 
 STEP_CSV_FIELDS = [
     "step", "t_wall_s", "t_sim_s", "x", "y", "yaw",
-    "measured_linear_vel_mps", "measured_angular_vel_radps",
-    "cmd_linear_mps", "cmd_angular_radps",
     "fresh_observation", "fresh_observation_count",
     "reward", "reward_cumulative",
     "outcome", "done",
-    "goal_distance_norm", "goal_distance_m", "goal_angle_norm", "goal_angle_rad",
-    "action_linear", "action_angular", "prev_action_linear", "prev_action_angular",
-    "lidar_min_norm", "lidar_min_m",
+    "goal_distance_norm", "goal_distance_m",
+    "action_linear", "action_angular",
     "fps_requested", "fps_effective", "scan_divisor_k",
 ]
 
@@ -475,20 +472,33 @@ def run_episode(node, fps_requested, fps_effective, k, rate_dir, expect_reset):
     distance_traveled = 0.0
     final_goal_distance = float("nan")
     final_x, final_y = start_x, start_y
+    episode_min_lidar_m = float("inf")
 
-    # last_gated_count starts at 0, matching gated_scan_count's reset above --
-    # NOT the post-forced-fresh-wait value -- so step 0's delta correctly
-    # captures that forced forward as this episode's first fresh observation.
-    last_gated_count = 0
+    # Handshake-phase scans (goal/clock/odom waits + the guaranteed forced-
+    # fresh forward) must not inflate episode accounting -- the evaluated
+    # episode conceptually begins with exactly one fresh observation: the
+    # one already consumed, during the handshake, to obtain `state` above.
+    # node.gated_scan_count is guaranteed unchanged since state was fetched
+    # (nothing between init_episode() and here spins the executor).
+    last_gated_count = node.gated_scan_count
+    n_fresh = 1
     next_step_heartbeat_wall = STEP_HEARTBEAT_PERIOD_S
     while not done:
         action = node.model.get_action(state, False, step_idx, False)
 
-        gated_delta = node.gated_scan_count - last_gated_count
+        if step_idx == 0:
+            # Step 0's fresh observation was already accounted for above
+            # (the handshake's guaranteed forced-fresh scan) -- not a delta
+            # observed here, so it must not be double-counted against n_fresh.
+            fresh_now = True
+        else:
+            gated_delta = node.gated_scan_count - last_gated_count
+            fresh_now = gated_delta > 0
+            n_fresh += gated_delta  # accumulate newly forwarded scans during
+                                     # evaluated stepping -- gated_delta > 1 means
+                                     # multiple scans were forwarded between control
+                                     # iterations, not multiple TD3 decisions
         last_gated_count = node.gated_scan_count
-        fresh_now = gated_delta > 0
-        n_fresh += gated_delta  # exact: sums to node.gated_scan_count by episode end,
-                                 # even if >1 scan was forwarded within a single step's gap
 
         next_state, reward, done, outcome, dist_trav = util.step(node, action, action_past)
 
@@ -512,6 +522,7 @@ def run_episode(node, fps_requested, fps_effective, k, rate_dir, expect_reset):
 
         lidar_min_norm = min(next_state[0:NUM_SCAN_SAMPLES])
         lidar_min_m = lidar_min_norm * LIDAR_DISTANCE_CAP
+        episode_min_lidar_m = min(episode_min_lidar_m, lidar_min_m)
         goal_distance_norm = next_state[NUM_SCAN_SAMPLES]
         goal_distance_m = goal_distance_norm * MAX_GOAL_DISTANCE
 
@@ -539,10 +550,6 @@ def run_episode(node, fps_requested, fps_effective, k, rate_dir, expect_reset):
             "t_wall_s": t_wall,
             "t_sim_s": t_sim,
             "x": x, "y": y, "yaw": yaw,
-            "measured_linear_vel_mps": vlin,
-            "measured_angular_vel_radps": vang,
-            "cmd_linear_mps": cmd_linear,
-            "cmd_angular_radps": cmd_angular,
             "fresh_observation": fresh_now,
             "fresh_observation_count": n_fresh,
             "reward": reward,
@@ -551,14 +558,8 @@ def run_episode(node, fps_requested, fps_effective, k, rate_dir, expect_reset):
             "done": done,
             "goal_distance_norm": goal_distance_norm,
             "goal_distance_m": goal_distance_m,
-            "goal_angle_norm": goal_angle_norm,
-            "goal_angle_rad": goal_angle_rad,
             "action_linear": action[LINEAR],
             "action_angular": action[ANGULAR],
-            "prev_action_linear": prev_action_linear,
-            "prev_action_angular": prev_action_angular,
-            "lidar_min_norm": lidar_min_norm,
-            "lidar_min_m": lidar_min_m,
             "fps_requested": fps_requested,
             "fps_effective": fps_effective,
             "scan_divisor_k": k,
@@ -617,7 +618,7 @@ def run_episode(node, fps_requested, fps_effective, k, rate_dir, expect_reset):
         "fps_requested": fps_requested,
         "fps_effective": fps_effective,
         "scan_divisor_k": k,
-        "min_lidar_m": float("nan") if steps_length == 0 else min(row["lidar_min_m"] for row in step_rows),
+        "min_lidar_m": float("nan") if steps_length == 0 else episode_min_lidar_m,
         "valid": 0 if steps_length <= 30 else 1,
         "init_retries": init_retries,
     }

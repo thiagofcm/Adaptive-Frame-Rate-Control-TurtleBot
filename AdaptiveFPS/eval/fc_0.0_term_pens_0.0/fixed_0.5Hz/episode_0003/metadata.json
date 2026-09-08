@@ -1,0 +1,29 @@
+{
+  "episode_index": 3,
+  "goal_x": 1.3,
+  "goal_y": 1.0,
+  "start_wall": 1788819021.9006276,
+  "end_wall": 1788819051.427855,
+  "start_sim": 43.192,
+  "end_sim": 72.72,
+  "duration_wall_s": 29.5272274017334,
+  "duration_sim_s": 29.528,
+  "odom_rows": 1477,
+  "scan_rows": 1476,
+  "obstacle_rows": 8852,
+  "obstacle_ids": [
+    "obstacle1::link_obstacle1",
+    "obstacle2::link_obstacle2",
+    "obstacle3::link_obstacle3",
+    "obstacle4::link_obstacle4",
+    "obstacle5::link_obstacle5",
+    "obstacle6::link_obstacle6"
+  ],
+  "mean_dt_odom_s": 0.020004896613640515,
+  "mean_dt_scan_s": 0.020009335986638472,
+  "mean_dt_cmd_vel_s": 0.0014178627174647853,
+  "arena_length": 4.2,
+  "arena_width": 4.2,
+  "outcome": null,
+  "outcome_note": "Ground-truth outcome is not recorded here. Join this episode (by order) with the matching row of the test_agent evaluation log '_test_stage<N>_eps<E>_<timestamp>.txt' written by common/logger.py."
+}
