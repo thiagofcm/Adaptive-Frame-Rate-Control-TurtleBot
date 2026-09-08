@@ -5,7 +5,7 @@ set -e
 SESSION="adaptivefps"
 WORKSPACE="/home/turtlebot3_drlnav"
 
-TOTAL_TIMESTEPS="${1:-200000}"
+TOTAL_TIMESTEPS="${1:-20000000}"
 NUM_STEPS="${2:-2048}"
 
 setup_cmd="cd $WORKSPACE && source /opt/ros/foxy/setup.bash && source install/setup.bash && export TURTLEBOT3_MODEL=burger"

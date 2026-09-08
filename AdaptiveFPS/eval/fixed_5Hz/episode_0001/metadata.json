@@ -1,8 +1,6 @@
 {
   "episode": 1,
   "policy_type": "fixed",
-  "requested_fixed_fps": 5.0,
-  "fixed_action_index": 3,
   "environment_fps_choices": [
     0.2,
     0.5,
@@ -14,11 +12,18 @@
   "initial_obs_interval": 5,
   "final_current_fps": 5.0,
   "final_obs_interval": 10,
-  "n_steps": 65228,
-  "episode_return": 1.1624818294505435,
-  "fresh_observations": 240,
-  "native_scans": 2393,
+  "n_steps": 70678,
+  "episode_return": 1.1586962843738897,
+  "fresh_observations": 243,
+  "native_scans": 2419,
   "outcome": 1,
   "outcome_str": "SUCCESS",
-  "success": true
+  "success": true,
+  "mean_fps": 5.0,
+  "causal_ticks": 242,
+  "causal_fps_action_counts": {
+    "5.0": 242
+  },
+  "requested_fixed_fps": 5.0,
+  "fixed_action_index": 3
 }

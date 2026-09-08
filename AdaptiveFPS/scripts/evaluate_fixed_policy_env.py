@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
-"""Fixed-policy evaluator for AdaptiveFPSEnv.
+"""Fixed-policy AND adaptive (trained recurrent-PPO) evaluator for
+AdaptiveFPSEnv.
 
-Forces a single constant sensing-rate action on every env.step(), for
---episodes episodes, and logs episodes.csv / steps.csv / metadata.json per
-rate -- purely a thin driver around AdaptiveFPSEnv. All ROS/sensing logic
-(scan gate, episode-ready handshake, frozen TD3, reward) lives in the env
-itself; this script never touches rclpy, /scan, /scan_gated, node.k, or
-the TD3 model directly.
+Fixed mode (--fps) forces a single constant sensing-rate action on every
+env.step(), for --episodes episodes. Adaptive mode (--model) loads a
+checkpoint saved by train_adaptive_fps_ppo.py and drives the env with
+that policy's deterministic (argmax) action every step, maintaining/
+resetting its LSTM hidden state per episode -- architecture and
+checkpoint format ported to match train_adaptive_fps_ppo.py's Agent
+exactly (see AgentEval below), following the same fixed-vs-adaptive
+evaluator pattern as the F1TENTH/LunarLander evaluate_adaptive_fps.py
+reference. Both modes log episodes.csv / steps.csv / metadata.json /
+summary.csv -- purely a thin driver around AdaptiveFPSEnv. All ROS/
+sensing logic (scan gate, episode-ready handshake, frozen TD3, reward)
+lives in the env itself; this script never touches rclpy, /scan,
+/scan_gated, node.k, or the TD3 model directly, and never modifies
+AdaptiveFPSEnv or train_adaptive_fps_ppo.py.
 
 Gazebo, environment_gated.py, and gazebo_goals must already be running
 (launched separately by the bash/tmux script) before this is started.
 
 Usage:
     python3 AdaptiveFPS/scripts/evaluate_fixed_policy_env.py --fps 5 --episodes 20
+    python3 AdaptiveFPS/scripts/evaluate_fixed_policy_env.py --model AdaptiveFPS/runs/<run>/model.pt --episodes 20
 """
 import argparse
 import atexit
@@ -22,8 +32,12 @@ import json
 import os
 import statistics
 import sys
+from collections import Counter
 
 import numpy as np
+import torch
+import torch.nn as nn
+from torch.distributions.categorical import Categorical
 
 sys.path.insert(0, os.environ["DRLNAV_BASE_PATH"])
 from AdaptiveFPS.env.adaptive_fps_env import AdaptiveFPSEnv  # noqa: E402
@@ -32,7 +46,7 @@ sys.path.insert(0, os.path.join(os.environ["DRLNAV_BASE_PATH"], "AdaptiveFPS", "
 from eval_adaptive_fps import fmt_hz  # noqa: E402  (reused, not re-derived)
 
 EPISODE_CSV_FIELDS = [
-    "episode", "fixed_fps", "success", "outcome", "outcome_str",
+    "episode", "policy_type", "fixed_fps", "mean_fps", "success", "outcome", "outcome_str",
     "n_steps", "episode_return", "fresh_observations", "native_scans",
     "final_goal_distance_m", "final_obs_interval",
     "fresh_observation_ratio", "native_scans_per_fresh_observation",
@@ -47,6 +61,12 @@ STEP_CSV_FIELDS = [
 
 TRAJECTORY_CSV_FIELDS = ["step", "x", "y", "wall_time", "sim_time"]
 
+# Adaptive mode + --diagnose-probs only: one row per causal sensing
+# decision (info["frame_consumed"]=True), holding the policy's full
+# action-probability distribution at that decision. prob_<fps>hz columns
+# are added at write time from env.fps_choices, in that exact order.
+CAUSAL_DECISIONS_CSV_BASE_FIELDS = ["step", "chosen_fps"]
+
 SUMMARY_CSV_NAME = "summary.csv"
 SUMMARY_CSV_FIELDS = [
     "run_name", "mean_fps", "n_episodes", "success_rate",
@@ -58,23 +78,179 @@ SUMMARY_CSV_FIELDS = [
 ]
 
 
-def run_episode(env, action_index, requested_fps, episode_num):
-    """Drives one episode with a fixed action every step. Returns
-    (episode_data, step_rows); episode_data is a superset of
-    EPISODE_CSV_FIELDS (extra keys feed metadata.json only)."""
+def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    nn.init.orthogonal_(layer.weight, std)
+    nn.init.constant_(layer.bias, bias_const)
+    return layer
+
+
+class AgentEval(nn.Module):
+    """Inference-only mirror of train_adaptive_fps_ppo.py's Agent --
+    architecture and submodule names (network/lstm/critic/actor) copied
+    verbatim so a training checkpoint's model_state_dict loads directly
+    via load_state_dict(). Not imported from the trainer (same reason
+    the F1TENTH/LunarLander reference keeps its own AgentEval separate
+    from Agent): this evaluator must keep working even if the trainer's
+    Agent class changes shape for an unrelated reason, and must never
+    accidentally pull in any training-only code (optimizer, rollout
+    buffers, etc.)."""
+
+    def __init__(self, obs_dim, n_actions, lstm_hidden_size=64):
+        super().__init__()
+
+        self.network = nn.Sequential(
+            layer_init(nn.Linear(obs_dim, 64)),
+            nn.Tanh(),
+        )
+
+        self.lstm = nn.LSTM(64, lstm_hidden_size)
+        for name, param in self.lstm.named_parameters():
+            if "bias" in name:
+                nn.init.constant_(param, 0)
+            elif "weight" in name:
+                nn.init.orthogonal_(param, 1.0)
+
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(lstm_hidden_size, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 1), std=1.0),
+        )
+        self.actor = nn.Sequential(
+            layer_init(nn.Linear(lstm_hidden_size, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, n_actions), std=0.01),
+        )
+
+    def get_states(self, x, lstm_state, done):
+        hidden = self.network(x)
+
+        batch_size = lstm_state[0].shape[1]
+        hidden = hidden.reshape((-1, batch_size, self.lstm.input_size))
+        done = done.reshape((-1, batch_size))
+
+        new_hidden = []
+        for h, d in zip(hidden, done):
+            h, lstm_state = self.lstm(
+                h.unsqueeze(0),
+                (
+                    (1.0 - d).view(1, -1, 1) * lstm_state[0],
+                    (1.0 - d).view(1, -1, 1) * lstm_state[1],
+                ),
+            )
+            new_hidden.append(h)
+
+        new_hidden = torch.flatten(torch.cat(new_hidden), 0, 1)
+        return new_hidden, lstm_state
+
+    def predict(self, obs, lstm_state, done, deterministic=True, return_probs=False):
+        """Single-observation convenience wrapper for evaluation: adds
+        the batch-of-1 dimension, runs get_states + actor head, returns
+        (action:int, new_lstm_state) -- or (action, new_lstm_state, probs)
+        when return_probs=True, where probs is a length-n_actions
+        np.ndarray from softmax(logits), ordered exactly like the actor
+        head's output (i.e. same index ordering as env.fps_choices).
+        Mirrors the F1TENTH reference's AgentEval.predict() exactly, with
+        return_probs added purely as an evaluation-time diagnostic --
+        deterministic action selection (argmax) is unaffected either way."""
+        obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+        done_tensor = torch.tensor([float(done)], dtype=torch.float32)
+
+        with torch.no_grad():
+            hidden, lstm_state = self.get_states(obs_tensor, lstm_state, done_tensor)
+            logits = self.actor(hidden)
+            if deterministic:
+                action = torch.argmax(logits, dim=-1)
+            else:
+                action = Categorical(logits=logits).sample()
+
+            if return_probs:
+                probs = torch.softmax(logits, dim=-1).squeeze(0).numpy()
+                return int(action.item()), lstm_state, probs
+
+        return int(action.item()), lstm_state
+
+
+def run_episode(env, episode_num, action_index=None, requested_fps=None, model=None, diagnose_probs=False):
+    """Drives one episode with either a fixed action every step
+    (action_index/requested_fps set, model=None) or a trained recurrent
+    policy's deterministic action every step (model set). Returns
+    (episode_data, step_rows, causal_decision_rows); episode_data is a
+    superset of EPISODE_CSV_FIELDS (extra keys feed metadata.json only).
+    causal_decision_rows is only ever non-empty in adaptive mode with
+    diagnose_probs=True (see CAUSAL_DECISIONS_CSV_FIELDS).
+
+    Causal-only FPS accounting: info["frame_consumed"] (same key/
+    semantics used for causal-tick masking in train_adaptive_fps_ppo.py)
+    gates which ticks' current_fps gets counted into causal_fps_counts /
+    mean_fps -- PPO's action on the (much more numerous) non-causal
+    ticks in between is deliberately never counted, matching training's
+    own mask semantics exactly. diagnose_probs reuses this exact same
+    gate (info["frame_consumed"]) to decide when to print/log the
+    policy's action probabilities -- deterministic action selection
+    itself (argmax) is unchanged, this is a read-only diagnostic."""
     observation, reset_info = env.reset()
     initial_current_fps = reset_info["current_fps"]
     initial_obs_interval = reset_info["obs_interval"]
 
+    lstm_state = None
+    if model is not None:
+        lstm_state = (
+            torch.zeros(1, 1, model.lstm.hidden_size),
+            torch.zeros(1, 1, model.lstm.hidden_size),
+        )
+    done = False
+
     step_rows = []
+    causal_decision_rows = []
     cumulative_reward = 0.0
     step = 0
+    causal_fps_counts = Counter()
+    causal_fps_sum = 0.0
+    causal_ticks = 0
     terminated = truncated = False
     info = reset_info
     while not (terminated or truncated):
-        observation, reward, terminated, truncated, info = env.step(action_index)
+        probs = None
+        if model is not None:
+            if diagnose_probs:
+                action, lstm_state, probs = model.predict(
+                    observation, lstm_state, done, deterministic=True, return_probs=True)
+            else:
+                action, lstm_state = model.predict(observation, lstm_state, done, deterministic=True)
+        else:
+            action = action_index
+
+        observation, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         cumulative_reward += reward
         step += 1
+
+        if info["frame_consumed"]:
+            causal_fps_counts[info["current_fps"]] += 1
+            causal_fps_sum += info["current_fps"]
+            causal_ticks += 1
+
+            if diagnose_probs and probs is not None:
+                # env.fps_choices is the authoritative action-index -> FPS
+                # mapping (env.step() does fps_choices[int(action)]
+                # directly) -- the actor head's logits/probs share that
+                # exact same index ordering, so probs[i] <-> fps_choices[i]
+                # always, never assumed/hardcoded here.
+                prob_str = "  ".join(
+                    f"{fmt_hz(fps)}={probs[i]:.2f}" for i, fps in enumerate(env.fps_choices))
+                print(f"[causal decision] step={step}")
+                print(f"  chosen={fmt_hz(info['current_fps'])} Hz")
+                print(f"  probs: {prob_str}")
+
+                row = {"step": step, "chosen_fps": info["current_fps"]}
+                for i, fps in enumerate(env.fps_choices):
+                    row[f"prob_{fmt_hz(fps)}hz"] = float(probs[i])
+                causal_decision_rows.append(row)
+
         step_rows.append({
             "step": step,
             "wall_time": info["wall_time"],
@@ -100,10 +276,13 @@ def run_episode(env, action_index, requested_fps, episode_num):
     fresh_observations = info["episode_frame_count"]
     fresh_observation_ratio = (fresh_observations / native_scans) if native_scans else 0.0
     native_scans_per_fresh_observation = (native_scans / fresh_observations) if fresh_observations else 0.0
+    mean_fps = (causal_fps_sum / causal_ticks) if causal_ticks else 0.0
 
     episode_data = {
         "episode": episode_num,
-        "fixed_fps": requested_fps,
+        "policy_type": "fixed" if model is None else "adaptive",
+        "fixed_fps": requested_fps if requested_fps is not None else "",
+        "mean_fps": mean_fps,
         "success": success,
         "outcome": info["outcome"],
         "outcome_str": info["outcome_str"],
@@ -119,16 +298,16 @@ def run_episode(env, action_index, requested_fps, episode_num):
         "initial_current_fps": initial_current_fps,
         "initial_obs_interval": initial_obs_interval,
         "final_current_fps": info["current_fps"],
+        "causal_fps_action_counts": dict(causal_fps_counts),
+        "causal_ticks": causal_ticks,
     }
-    return episode_data, step_rows
+    return episode_data, step_rows, causal_decision_rows
 
 
-def build_metadata(env, args, action_index, episode_data):
-    return {
+def build_metadata(env, args, action_index, episode_data, model_path=None, lstm_hidden_size=None):
+    metadata = {
         "episode": episode_data["episode"],
-        "policy_type": "fixed",
-        "requested_fixed_fps": args.fps,
-        "fixed_action_index": action_index,
+        "policy_type": episode_data["policy_type"],
         "environment_fps_choices": env.fps_choices,
         "initial_current_fps": episode_data["initial_current_fps"],
         "initial_obs_interval": episode_data["initial_obs_interval"],
@@ -141,7 +320,17 @@ def build_metadata(env, args, action_index, episode_data):
         "outcome": episode_data["outcome"],
         "outcome_str": episode_data["outcome_str"],
         "success": episode_data["success"],
+        "mean_fps": episode_data["mean_fps"],
+        "causal_ticks": episode_data["causal_ticks"],
+        "causal_fps_action_counts": episode_data["causal_fps_action_counts"],
     }
+    if model_path is None:
+        metadata["requested_fixed_fps"] = args.fps
+        metadata["fixed_action_index"] = action_index
+    else:
+        metadata["model_path"] = model_path
+        metadata["lstm_hidden_size"] = lstm_hidden_size
+    return metadata
 
 
 def summarize_results(eval_root):
@@ -169,7 +358,15 @@ def summarize_results(eval_root):
 
         run_name = os.path.basename(os.path.dirname(path))
 
-        fixed_fps = np.array([float(row["fixed_fps"]) for row in rows])
+        # mean_fps (not fixed_fps) is used here so this works for both
+        # policy types: fixed_fps is blank for adaptive-mode rows, while
+        # mean_fps (causal-tick-averaged, see run_episode()) is always
+        # populated and equals the constant fixed rate in fixed mode.
+        # Falls back to fixed_fps for episodes.csv files written before
+        # this column existed, so old runs on disk don't break this scan.
+        mean_fps_col = np.array([
+            float(row["mean_fps"]) if row.get("mean_fps") not in (None, "") else float(row["fixed_fps"])
+            for row in rows])
         successes = np.array([row["success"] == "True" for row in rows])
         returns = np.array([float(row["episode_return"]) for row in rows])
         n_steps = np.array([float(row["n_steps"]) for row in rows])
@@ -179,7 +376,7 @@ def summarize_results(eval_root):
 
         summary_rows.append({
             "run_name": run_name,
-            "mean_fps": float(fixed_fps.mean()),
+            "mean_fps": float(mean_fps_col.mean()),
             "n_episodes": len(rows),
             "success_rate": float(successes.mean() * 100),
             "mean_episode_return": float(returns.mean()),
@@ -234,31 +431,98 @@ def print_summary(episode_rows):
     print(f"Native scans per fresh observation: {npf_m:.2f} +/- {npf_s:.2f}")
 
 
+def print_causal_fps_distribution(fps_choices, episode_rows):
+    """Adaptive mode only: aggregate every episode's causal_fps_action_counts
+    (populated in run_episode(), gated on info["frame_consumed"] -- never
+    counts PPO's output on non-causal/stale ticks) into one run-level
+    distribution and print it."""
+    total_counts = Counter()
+    total_ticks = 0
+    for row in episode_rows:
+        for fps, count in row.get("causal_fps_action_counts", {}).items():
+            total_counts[fps] += count
+            total_ticks += count
+
+    if total_ticks == 0:
+        return
+
+    print()
+    print(f"Causal sensing-decision FPS distribution ({total_ticks} causal ticks total, "
+          f"i.e. frame_consumed=True -- PPO's output on non-causal ticks is not counted):")
+    for fps in fps_choices:
+        count = total_counts.get(fps, 0)
+        pct = 100.0 * count / total_ticks
+        print(f"  {fps:>5.1f} Hz: {count:>6} ({pct:5.1f}%)")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--fps", type=float, required=True, help="constant sensing rate to force every step")
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--fps", type=float, default=None,
+                             help="constant sensing rate to force every step (fixed-policy mode)")
+    mode_group.add_argument("--model", type=str, default=None,
+                             help="path to a train_adaptive_fps_ppo.py checkpoint .pt file (adaptive mode)")
     parser.add_argument("--episodes", type=int, default=20, help="number of episodes to evaluate")
+    parser.add_argument("--diagnose-probs", action="store_true",
+                         help="adaptive mode only: print the policy's action-probability "
+                              "distribution at each causal sensing decision (frame_consumed=True), "
+                              "and save it to causal_decisions.csv per episode. Deterministic "
+                              "(argmax) action selection is unaffected -- diagnostic only, off by default.")
     args = parser.parse_args()
 
     env = AdaptiveFPSEnv()
     try:
-        if args.fps not in env.fps_choices:
-            raise SystemExit(f"--fps must be one of {env.fps_choices}, got {args.fps}")
-        action_index = env.fps_choices.index(args.fps)
-
         eval_root = os.path.join(os.environ["DRLNAV_BASE_PATH"], "AdaptiveFPS", "eval")
-        rate_dir = os.path.join(eval_root, f"fixed_{fmt_hz(args.fps)}Hz")
-        os.makedirs(rate_dir, exist_ok=True)
 
+        action_index = None
+        model = None
+        lstm_hidden_size = None
+
+        if args.fps is not None:
+            if args.fps not in env.fps_choices:
+                raise SystemExit(f"--fps must be one of {env.fps_choices}, got {args.fps}")
+            action_index = env.fps_choices.index(args.fps)
+
+            out_dir = os.path.join(eval_root, f"fixed_{fmt_hz(args.fps)}Hz")
+            print("AdaptiveFPSEnv fixed-policy evaluation")
+            print(f"  requested fps: {args.fps}")
+            print(f"  action index:  {action_index} (fps_choices={env.fps_choices})")
+        else:
+            checkpoint = torch.load(args.model, map_location="cpu")
+            obs_dim = int(np.prod(env.observation_space.shape))
+            n_actions = env.action_space.n
+            lstm_hidden_size = checkpoint.get("args", {}).get("lstm_hidden_size", 64)
+
+            model = AgentEval(obs_dim=obs_dim, n_actions=n_actions, lstm_hidden_size=lstm_hidden_size)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            model.eval()
+
+            # Both the run directory name and the checkpoint's own
+            # basename are folded in -- final checkpoints are always
+            # literally named "model.pt" (see train_adaptive_fps_ppo.py),
+            # so the checkpoint basename alone would collide across every
+            # training run and silently mix their evaluation results
+            # into the same output directory.
+            run_dir_name = os.path.basename(os.path.dirname(os.path.abspath(args.model)))
+            checkpoint_basename = os.path.splitext(os.path.basename(args.model))[0]
+            out_dir = os.path.join(eval_root, f"adaptive_{run_dir_name}_{checkpoint_basename}")
+            print("AdaptiveFPSEnv adaptive (recurrent PPO) evaluation")
+            print(f"  loaded model:     {args.model}")
+            print(f"  obs_dim:          {obs_dim}")
+            print(f"  n_actions:        {n_actions} (fps_choices={env.fps_choices})")
+            print(f"  lstm_hidden_size: {lstm_hidden_size}")
+            print(f"  diagnose_probs:   {args.diagnose_probs}")
+
+        if args.diagnose_probs and model is None:
+            print("--diagnose-probs has no effect in fixed-policy mode (no policy to diagnose); ignoring.")
+
+        os.makedirs(out_dir, exist_ok=True)
         atexit.register(summarize_results, eval_root)
 
-        print("AdaptiveFPSEnv fixed-policy evaluation")
-        print(f"  requested fps: {args.fps}")
-        print(f"  action index:  {action_index} (fps_choices={env.fps_choices})")
         print(f"  episodes:      {args.episodes}")
-        print(f"  output dir:    {rate_dir}")
+        print(f"  output dir:    {out_dir}")
 
-        episodes_csv_path = os.path.join(rate_dir, "episodes.csv")
+        episodes_csv_path = os.path.join(out_dir, "episodes.csv")
         write_header = not os.path.exists(episodes_csv_path)
         episode_rows = []
 
@@ -268,9 +532,11 @@ def main():
                 writer.writeheader()
 
             for ep in range(1, args.episodes + 1):
-                episode_data, step_rows = run_episode(env, action_index, args.fps, ep)
+                episode_data, step_rows, causal_decision_rows = run_episode(
+                    env, ep, action_index=action_index, requested_fps=args.fps, model=model,
+                    diagnose_probs=args.diagnose_probs)
 
-                episode_dir = os.path.join(rate_dir, f"episode_{ep:04d}")
+                episode_dir = os.path.join(out_dir, f"episode_{ep:04d}")
                 os.makedirs(episode_dir, exist_ok=True)
 
                 with open(os.path.join(episode_dir, "steps.csv"), "w", newline="") as sf:
@@ -285,7 +551,17 @@ def main():
                     twriter.writeheader()
                     twriter.writerows({k: row[k] for k in TRAJECTORY_CSV_FIELDS} for row in step_rows)
 
-                metadata = build_metadata(env, args, action_index, episode_data)
+                if causal_decision_rows:
+                    causal_fields = CAUSAL_DECISIONS_CSV_BASE_FIELDS + [
+                        f"prob_{fmt_hz(fps)}hz" for fps in env.fps_choices]
+                    with open(os.path.join(episode_dir, "causal_decisions.csv"), "w", newline="") as cf:
+                        cwriter = csv.DictWriter(cf, fieldnames=causal_fields)
+                        cwriter.writeheader()
+                        cwriter.writerows(causal_decision_rows)
+
+                metadata = build_metadata(
+                    env, args, action_index, episode_data,
+                    model_path=args.model, lstm_hidden_size=lstm_hidden_size)
                 with open(os.path.join(episode_dir, "metadata.json"), "w") as mf:
                     json.dump(metadata, mf, indent=2)
 
@@ -296,9 +572,12 @@ def main():
                 print(
                     f"Episode {ep}/{args.episodes}: {episode_data['outcome_str']} | "
                     f"steps={episode_data['n_steps']} | return={episode_data['episode_return']:.2f} | "
+                    f"mean_fps={episode_data['mean_fps']:.2f} | "
                     f"fresh={episode_data['fresh_observations']} | native={episode_data['native_scans']}")
 
         print_summary(episode_rows)
+        if model is not None:
+            print_causal_fps_distribution(env.fps_choices, episode_rows)
     finally:
         env.close()
 

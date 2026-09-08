@@ -170,7 +170,7 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self.current_observation = None
         self._initial_goal_distance = None
         self._previous_goal_distance = None
-        self.frame_cost = 0.001
+        self.frame_cost = 0.0
 
     def _on_native_scan(self, msg):
         self.native_scan_count += 1
@@ -366,18 +366,18 @@ class AdaptiveFPSEnv(gymnasium.Env):
         # TEMPORARY debug print for this validation stage.
         # ---------------------------------
         fps_ratio, obs_age_ratio, episode_frame_count_ratio = self._augmented_features()
-        if frame_consumed or self.world_step_count % 200 == 0:
-            print(
-                f"[AdaptiveFPS] "
-                f"step={self.world_step_count:06d} "
-                f"fresh={int(frame_consumed)} "
-                f"fps={self.current_fps:4.1f} "
-                f"fps_ratio={fps_ratio:.3f} "
-                f"obs_age={node.scans_since_forward:3d} "
-                f"obs_age_ratio={obs_age_ratio:.3f} "
-                f"frame_count={self.episode_frame_count:4d} "
-                f"frame_count_ratio={episode_frame_count_ratio:.3f}"
-            )
+        # if frame_consumed or self.world_step_count % 200 == 0:
+        #     print(
+        #         f"[AdaptiveFPS] "
+        #         f"step={self.world_step_count:06d} "
+        #         f"fresh={int(frame_consumed)} "
+        #         f"fps={self.current_fps:4.1f} "
+        #         f"fps_ratio={fps_ratio:.3f} "
+        #         f"obs_age={node.scans_since_forward:3d} "
+        #         f"obs_age_ratio={obs_age_ratio:.3f} "
+        #         f"frame_count={self.episode_frame_count:4d} "
+        #         f"frame_count_ratio={episode_frame_count_ratio:.3f}"
+        #     )
         # ---------------------------------
         # 5. Adaptive-policy observation (PPO-facing)
         # ---------------------------------
