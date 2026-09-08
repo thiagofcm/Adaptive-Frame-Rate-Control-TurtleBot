@@ -33,7 +33,7 @@ from rclpy.node import Node
 from turtlebot3_msgs.srv import RingGoal
 import xml.etree.ElementTree as ET
 from ..drl_environment.drl_environment import ARENA_LENGTH, ARENA_WIDTH, ENABLE_DYNAMIC_GOALS
-from ..common.settings import ENABLE_TRUE_RANDOM_GOALS
+from ..common.settings import ENABLE_TRUE_RANDOM_GOALS, ENABLE_STAGE9_TRAINING_RANDOMIZATION, STAGE9_TRAINING_SEED
 
 NO_GOAL_SPAWN_MARGIN = 0.3 # meters away from any wall
 
@@ -78,7 +78,10 @@ class DRLGazebo(Node):
 
         with open('/tmp/drlnav_current_stage.txt', 'r') as f:
             self.stage = int(f.read())
-        print(f"running on stage: {self.stage}, dynamic goals enabled: {ENABLE_DYNAMIC_GOALS}")
+        print(f"running on stage: {self.stage}, dynamic goals enabled: {ENABLE_DYNAMIC_GOALS}, "
+              f"stage9 training randomization: {ENABLE_STAGE9_TRAINING_RANDOMIZATION}")
+        if ENABLE_STAGE9_TRAINING_RANDOMIZATION and STAGE9_TRAINING_SEED is not None:
+            random.seed(STAGE9_TRAINING_SEED)
 
         self.prev_x, self.prev_y = -1, -1
         self.goal_x, self.goal_y = 0.5, 0.0
@@ -236,7 +239,7 @@ class DRLGazebo(Node):
 
 
     def generate_goal_pose(self):
-        if self.stage == 9:
+        if self.stage == 9 and not ENABLE_STAGE9_TRAINING_RANDOMIZATION:
             # Deterministic Stage 9 path, for paired FixedFPS comparisons.
             # Bypasses the retry loop below entirely (by returning before it)
             # so exactly one STAGE9_GOAL_ORDER entry is consumed per call,
@@ -265,7 +268,7 @@ class DRLGazebo(Node):
                 index = random.randrange(0, len(goal_pose_list))
                 self.goal_x = float(goal_pose_list[index][0])
                 self.goal_y = float(goal_pose_list[index][1])
-            elif self.stage == 8 or self.stage == 12:
+            elif self.stage == 8 or self.stage == 9 or self.stage == 12:
                 # --- Define static goal positions here ---
                 goal_pose_list = [[2.0, 2.0], [2.0, 1.5], [2.0, -0.5], [2.0, -1.0], [2.0, -2.0], [1.3, 1.0],
                                     [1.0, 0.3], [1.0, -2.0], [0.3, -1.0],  [0.0, 2.0], [0.0, -1.0], [-1.0, 1.0],

@@ -7,6 +7,14 @@ ENABLE_STACKING          = False    # Enable processing multiple consecutive sca
 ENABLE_VISUAL            = False    # Meant to be used only during evaluation/testing phase
 ENABLE_TRUE_RANDOM_GOALS = False    # If false, goals are selected semi-randomly from a list of known valid goal positions
 ENABLE_DYNAMIC_GOALS     = False    # If true, goal difficulty (distance) is adapted according to current success rate
+ENABLE_STAGE9_TRAINING_RANDOMIZATION = True  # Stage 9 only: if true, goals are drawn with a random index into
+                                               # the fixed 17-point candidate list every episode (matching how the
+                                               # frozen TD3 checkpoint was originally trained) instead of today's
+                                               # deterministic STAGE9_GOAL_ORDER cycle (added later, for paired
+                                               # FixedFPS/AdaptiveFPS sensing-rate comparisons). Does not affect
+                                               # robot start-pose handling or any other stage.
+STAGE9_TRAINING_SEED = None  # If set (int), seeds `random` once at DRLGazebo startup when the flag above is
+                              # True, so a training run's goal sequence is reproducible.
 MODEL_STORE_INTERVAL     = 100      # Store the model weights every N episodes
 GRAPH_DRAW_INTERVAL      = 10       # Draw the graph every N episodes (drawing too often will slow down training)
 GRAPH_AVERAGE_REWARD     = 10       # Average the reward graph over every N episodes

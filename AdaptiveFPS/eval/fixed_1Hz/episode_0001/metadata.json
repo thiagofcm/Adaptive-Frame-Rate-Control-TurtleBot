@@ -14,11 +14,11 @@
   "initial_obs_interval": 5,
   "final_current_fps": 1.0,
   "final_obs_interval": 50,
-  "n_steps": 83808,
-  "episode_return": 0.9007628316132469,
+  "n_steps": 78183,
+  "episode_return": -0.11256638593283186,
   "fresh_observations": 52,
-  "native_scans": 2531,
-  "outcome": 1,
-  "outcome_str": "SUCCESS",
-  "success": true
+  "native_scans": 2547,
+  "outcome": 4,
+  "outcome_str": "TIMEOUT",
+  "success": false
 }

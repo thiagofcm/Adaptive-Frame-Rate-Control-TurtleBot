@@ -1,6 +1,0 @@
-episode_index,dir,start_wall,end_wall,duration_s,odom_rows,scan_rows,obstacle_rows
-1,/home/turtlebot3_drlnav/AdaptiveFPS/eval/fixed_1Hz/episode_0001,1788817865.2888288,1788817902.764463,37.47563409805298,1873,1872,11232
-2,/home/turtlebot3_drlnav/AdaptiveFPS/eval/fixed_1Hz/episode_0002,1788817903.4338715,1788817909.7895057,6.3556342124938965,319,318,1908
-3,/home/turtlebot3_drlnav/AdaptiveFPS/eval/fixed_1Hz/episode_0003,1788817910.243011,1788817931.3659012,21.12289023399353,1056,1055,6326
-4,/home/turtlebot3_drlnav/AdaptiveFPS/eval/fixed_1Hz/episode_0004,1788817931.7253985,1788817948.5542297,16.8288311958313,841,840,5037
-5,/home/turtlebot3_drlnav/AdaptiveFPS/eval/fixed_1Hz/episode_0005,1788817949.1610975,1788817977.1515555,27.990458011627197,1400,1399,8394

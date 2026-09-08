@@ -54,7 +54,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
 from turtlebot3_drl.common import utilities as util
-from turtlebot3_drl.common.settings import SUCCESS
+from turtlebot3_drl.common.settings import SUCCESS, EPISODE_TIMEOUT_SECONDS
 from turtlebot3_drl.drl_environment.drl_environment import NUM_SCAN_SAMPLES, MAX_GOAL_DISTANCE
 
 BASE_PATH = os.environ["DRLNAV_BASE_PATH"]
@@ -86,12 +86,13 @@ class AdaptiveFPSEnv(gymnasium.Env):
     (`scans_since_last_obs`, i.e. `node.scans_since_forward`), never
     control transitions.
 
-    Observation: the raw 44-D state vector DRLEnvironment's own
-    get_state() produces -- the exact same vector fed to the frozen TD3
-    actor (40 normalized LiDAR ranges, goal_distance_norm, goal_angle_norm,
-    prev_action_linear, prev_action_angular). No augmentation, no
-    temporal/adaptive-sensing features -- this stage validates sensing
-    mechanics, not PPO observation design.
+    Observation (frozen TD3 navigation input, section 1 of step()): the
+    raw 44-D state vector DRLEnvironment's own get_state() produces --
+    unaugmented, unchanged. Observation (PPO-facing, returned by
+    reset()/step()): that same 44-D vector plus 3 sensing-state features
+    appended at the end (fps_ratio, obs_age_ratio,
+    episode_frame_count_ratio -- see _augmented_features()), 47-D total.
+    The frozen TD3 actor never sees the augmented 3 dims.
 
     TurtleBot equivalent of F1TENTH's self.last_sampled_scan: there is no
     separate held-scan object here. The fresh/held LiDAR observation is
@@ -131,9 +132,29 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self.fps_choices = [0.2, 0.5, 1.0, 5.0, 10.0]
         self.action_space = spaces.Discrete(len(self.fps_choices))
 
-        # Observation Space definition
-        low = np.array([0.0] * NUM_SCAN_SAMPLES + [0.0, -1.0, -1.0, -1.0], dtype=np.float32)
-        high = np.array([1.0] * NUM_SCAN_SAMPLES + [1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        # Fixed normalization denominators for the augmented sensing-state
+        # features (fps_ratio/obs_age_ratio/episode_frame_count_ratio,
+        # see _augmented_features()) -- computed once from fps_choices/
+        # NATIVE_SCAN_HZ/EPISODE_TIMEOUT_SECONDS, mirroring the F1TENTH
+        # reference's own fixed-denominator convention
+        # (self.max_obs_interval = int(self.control_frequency /
+        # min(self.fps_choices)); episode_frame_count normalized by
+        # self.budget), adapted to TurtleBot's native-scan-count gate
+        # instead of control-step counting, and to the fact this env has
+        # no "budget" constructor concept -- the frame-count bound is
+        # instead derived from the episode timeout and the fastest
+        # available sensing rate.
+        self._min_obs_interval = max(1, round(NATIVE_SCAN_HZ / max(self.fps_choices)))  # fastest possible k (10 Hz)
+        self._max_obs_interval = max(1, round(NATIVE_SCAN_HZ / min(self.fps_choices)))  # slowest possible k (0.2 Hz)
+        self._max_episode_frame_count = max(
+            1, round((EPISODE_TIMEOUT_SECONDS * NATIVE_SCAN_HZ) / self._min_obs_interval))
+
+        # Observation Space definition: original 44-D navigation state +
+        # 3 sensing-state features (fps_ratio, obs_age_ratio,
+        # episode_frame_count_ratio), all three already clipped to [0, 1]
+        # by _augmented_features() below.
+        low = np.array([0.0] * NUM_SCAN_SAMPLES + [0.0, -1.0, -1.0, -1.0] + [0.0, 0.0, 0.0], dtype=np.float32)
+        high = np.array([1.0] * NUM_SCAN_SAMPLES + [1.0, 1.0, 1.0, 1.0] + [1.0, 1.0, 1.0], dtype=np.float32)
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
         # flag for reseting GAZEBO env
@@ -149,9 +170,41 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self.current_observation = None
         self._initial_goal_distance = None
         self._previous_goal_distance = None
+        self.frame_cost = 0.001
 
     def _on_native_scan(self, msg):
         self.native_scan_count += 1
+
+    def _augmented_features(self):
+        """fps_ratio / obs_age_ratio / episode_frame_count_ratio -- the
+        three sensing-state features appended to the PPO-facing
+        observation (never to the frozen TD3 navigation observation).
+        Reuses only existing, already-validated state -- no new counters,
+        no changes to the gate or to frame_consumed semantics:
+
+        - fps_ratio: the currently ACTIVE sensing rate (self.current_fps,
+          not a just-requested action that hasn't taken effect yet)
+          normalized by the fastest available choice.
+        - obs_age_ratio: TurtleBot equivalent of F1TENTH's
+          steps_since_last_obs / max_obs_interval, substituting native
+          /scan arrivals for control steps (see class docstring) --
+          node.scans_since_forward is the exact same counter the
+          validated gate (_on_real_scan, unmodified) already maintains:
+          incremented on every native scan, reset to 0 the instant a
+          forward happens. Reading it here is purely observational.
+          Normalized by the fixed _max_obs_interval (the slowest
+          available rate's interval), matching F1TENTH's fixed-
+          denominator convention, then clipped to [0, 1].
+        - episode_frame_count_ratio: self.episode_frame_count (already
+          includes the initial reset observation, semantics unchanged)
+          normalized by the derived _max_episode_frame_count and clipped
+          to [0, 1].
+        """
+        node = self.node
+        fps_ratio = self.current_fps / max(self.fps_choices)
+        obs_age_ratio = float(np.clip(node.scans_since_forward / self._max_obs_interval, 0.0, 1.0))
+        episode_frame_count_ratio = float(np.clip(self.episode_frame_count / self._max_episode_frame_count, 0.0, 1.0))
+        return fps_ratio, obs_age_ratio, episode_frame_count_ratio
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -223,11 +276,17 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self._episode_start_sim = stamp_to_sec(node.latest_odom.header.stamp) if node.latest_odom is not None else None
 
         # Create reset observation and Info
-        ppo_observation = np.asarray(observation, dtype=np.float32)
+        fps_ratio, obs_age_ratio, episode_frame_count_ratio = self._augmented_features()
+        ppo_observation = np.concatenate(
+            [np.asarray(observation, dtype=np.float32), [fps_ratio, obs_age_ratio, episode_frame_count_ratio]]
+        ).astype(np.float32)
         info = {
             "current_fps": self.current_fps,
             "obs_interval": self.obs_interval,
             "scan_interval_k": self.obs_interval,  # backward-compatible alias
+            "fps_ratio": fps_ratio,
+            "obs_age_ratio": obs_age_ratio,
+            "episode_frame_count_ratio": episode_frame_count_ratio,
         }
         return ppo_observation, info
 
@@ -274,6 +333,7 @@ class AdaptiveFPSEnv(gymnasium.Env):
             self.obs_interval = max(1, round(NATIVE_SCAN_HZ / self.current_fps))
             node.k = self.obs_interval
 
+
         # ---------------------------------
         # 4. Reward
         # ---------------------------------
@@ -281,22 +341,49 @@ class AdaptiveFPSEnv(gymnasium.Env):
         adaptive_reward = get_adaptive_reward(
             self._previous_goal_distance, goal_distance_m, self._initial_goal_distance)
         self._previous_goal_distance = goal_distance_m
+        frame_penalty = self.frame_cost if frame_consumed else 0.0
+        reward = adaptive_reward - frame_penalty
+
 
         self.prev_navigation_action = copy.deepcopy(navigation_action)
-
         terminated = bool(done)
         truncated = False  # DRLEnvironment's own TIMEOUT outcome is already
                             # reported via `done`/`outcome`; no separate
                             # Gym-level truncation concept is introduced here.
 
         if terminated:
+            if outcome == SUCCESS:
+                reward += 0.5
+            else:
+                reward -= 0.5
             util.pause_simulation(node, 0)
             self._expect_reset = not (outcome == SUCCESS)
 
         # ---------------------------------
+        # Sensing-state features -- appended to the PPO-facing observation
+        # only, never fed to the frozen TD3 navigation policy (section 1
+        # above already ran on the un-augmented self.current_observation).
+        # TEMPORARY debug print for this validation stage.
+        # ---------------------------------
+        fps_ratio, obs_age_ratio, episode_frame_count_ratio = self._augmented_features()
+        if frame_consumed or self.world_step_count % 200 == 0:
+            print(
+                f"[AdaptiveFPS] "
+                f"step={self.world_step_count:06d} "
+                f"fresh={int(frame_consumed)} "
+                f"fps={self.current_fps:4.1f} "
+                f"fps_ratio={fps_ratio:.3f} "
+                f"obs_age={node.scans_since_forward:3d} "
+                f"obs_age_ratio={obs_age_ratio:.3f} "
+                f"frame_count={self.episode_frame_count:4d} "
+                f"frame_count_ratio={episode_frame_count_ratio:.3f}"
+            )
+        # ---------------------------------
         # 5. Adaptive-policy observation (PPO-facing)
         # ---------------------------------
-        ppo_observation = np.asarray(observation, dtype=np.float32)
+        ppo_observation = np.concatenate(
+            [np.asarray(observation, dtype=np.float32), [fps_ratio, obs_age_ratio, episode_frame_count_ratio]]
+        ).astype(np.float32)
 
         # ---------------------------------
         # Diagnostics only: x/y/wall_time/sim_time, for steps.csv/
@@ -317,6 +404,8 @@ class AdaptiveFPSEnv(gymnasium.Env):
         # 6. Info
         # ---------------------------------
         info = {
+            "frame_penalty": frame_penalty,
+            "frame_cost": self.frame_cost,
             "navigation_action": navigation_action,
             "nav_reward": nav_reward,
             "current_fps": self.current_fps,
@@ -333,11 +422,14 @@ class AdaptiveFPSEnv(gymnasium.Env):
             "y": y,
             "wall_time": wall_time,
             "sim_time": sim_time,
+            "fps_ratio": fps_ratio,
+            "obs_age_ratio": obs_age_ratio,
+            "episode_frame_count_ratio": episode_frame_count_ratio,
             # backward-compatible aliases
             "scan_interval_k": self.obs_interval,
             "scans_since_last_observation": node.scans_since_forward,
         }
-        return ppo_observation, float(adaptive_reward), terminated, truncated, info
+        return ppo_observation, float(reward), terminated, truncated, info
 
     def close(self):
         self.node.destroy_node()

@@ -9,8 +9,8 @@ tmux*
 FixedFPS/eval/
 
 # Generated AdaptiveFPS experiments
-# AdaptiveFPS/eval/
-# AdaptiveFPS/runs/
+AdaptiveFPS/eval/
+AdaptiveFPS/runs/
 
 # Generated artifacts
 *.npz

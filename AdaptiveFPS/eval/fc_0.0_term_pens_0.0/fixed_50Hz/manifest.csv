@@ -1,4 +1,0 @@
-episode_index,dir,start_wall,end_wall,duration_s,odom_rows,scan_rows,obstacle_rows
-1,/home/turtlebot3_drlnav/AdaptiveFPS/eval/fixed_50Hz/episode_0001,1788816992.3131447,1788817039.879233,47.56608819961548,2376,2375,14250
-2,/home/turtlebot3_drlnav/AdaptiveFPS/eval/fixed_50Hz/episode_0002,1788817040.6427903,1788817047.6426866,6.999896287918091,351,350,2095
-3,/home/turtlebot3_drlnav/AdaptiveFPS/eval/fixed_50Hz/episode_0003,1788817047.9771948,1788817061.7218208,13.74462604522705,688,687,4117
