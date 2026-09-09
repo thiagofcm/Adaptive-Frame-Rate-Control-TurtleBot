@@ -61,6 +61,26 @@ STEP_CSV_FIELDS = [
 
 TRAJECTORY_CSV_FIELDS = ["step", "x", "y", "wall_time", "sim_time"]
 
+# One row per completed AdaptiveFPSEnv.step() call (one outer PPO
+# transition -- since the PPO_RATE_HZ/PPO_DT change, step() already
+# internally loops the dense inner TD3/control ticks, so this is NOT a
+# downsampled version of steps.csv, it's a differently-shaped view of the
+# same per-outer-step data steps.csv already holds, plus the reward
+# decomposition and a couple of fields steps.csv doesn't carry (yaw,
+# goal_distance_norm, action_linear/angular, ppo_reward_cumulative).
+# steps.csv itself is left completely unchanged.
+PPO_STEP_CSV_FIELDS = [
+    "ppo_step", "t_wall_s", "t_sim_s", "ppo_step_sim_dt", "inner_ticks",
+    "x", "y", "yaw", "goal_distance_m", "goal_distance_norm",
+    "ppo_reward", "ppo_reward_cumulative",
+    "navigation_reward", "terminal_reward", "frame_cost_reward",
+    "fresh_observation", "frame_consumed", "episode_frame_count",
+    "current_fps", "scan_divisor_k",
+    "obs_age_ratio", "fps_ratio", "frame_count_ratio",
+    "action_linear", "action_angular",
+    "outcome", "done",
+]
+
 # Adaptive mode + --diagnose-probs only: one row per causal sensing
 # decision (info["frame_consumed"]=True), holding the policy's full
 # action-probability distribution at that decision. prob_<fps>hz columns
@@ -174,7 +194,8 @@ class AgentEval(nn.Module):
         return int(action.item()), lstm_state
 
 
-def run_episode(env, episode_num, action_index=None, requested_fps=None, model=None, diagnose_probs=False):
+def run_episode(env, episode_num, action_index=None, requested_fps=None, model=None, diagnose_probs=False,
+                 episode_dir=None):
     """Drives one episode with either a fixed action every step
     (action_index/requested_fps set, model=None) or a trained recurrent
     policy's deterministic action every step (model set). Returns
@@ -191,7 +212,13 @@ def run_episode(env, episode_num, action_index=None, requested_fps=None, model=N
     own mask semantics exactly. diagnose_probs reuses this exact same
     gate (info["frame_consumed"]) to decide when to print/log the
     policy's action probabilities -- deterministic action selection
-    itself (argmax) is unchanged, this is a read-only diagnostic."""
+    itself (argmax) is unchanged, this is a read-only diagnostic.
+
+    If episode_dir is given, ppo_step.csv is written there incrementally
+    (one row per completed env.step() call, flushed immediately) so the
+    file stays valid even if the process is interrupted mid-episode --
+    unlike steps.csv/trajectory.csv, which are only written once the
+    whole episode's rows are already collected in memory."""
     observation, reset_info = env.reset()
     initial_current_fps = reset_info["current_fps"]
     initial_obs_interval = reset_info["obs_interval"]
@@ -208,68 +235,130 @@ def run_episode(env, episode_num, action_index=None, requested_fps=None, model=N
     causal_decision_rows = []
     cumulative_reward = 0.0
     step = 0
+    # ppo_step / ppo_reward_cumulative: reset here, i.e. once per episode
+    # (run_episode() is called once per episode), matching the requested
+    # "reset at the beginning of every episode" semantics.
+    ppo_step = 0
+    ppo_reward_cumulative = 0.0
     causal_fps_counts = Counter()
     causal_fps_sum = 0.0
     causal_ticks = 0
     terminated = truncated = False
     info = reset_info
-    while not (terminated or truncated):
-        probs = None
-        if model is not None:
-            if diagnose_probs:
-                action, lstm_state, probs = model.predict(
-                    observation, lstm_state, done, deterministic=True, return_probs=True)
+
+    ppo_step_file = None
+    ppo_step_writer = None
+    if episode_dir is not None:
+        ppo_step_file = open(os.path.join(episode_dir, "ppo_step.csv"), "w", newline="")
+        ppo_step_writer = csv.DictWriter(ppo_step_file, fieldnames=PPO_STEP_CSV_FIELDS)
+        ppo_step_writer.writeheader()
+        ppo_step_file.flush()
+
+    try:
+        while not (terminated or truncated):
+            probs = None
+            if model is not None:
+                if diagnose_probs:
+                    action, lstm_state, probs = model.predict(
+                        observation, lstm_state, done, deterministic=True, return_probs=True)
+                else:
+                    action, lstm_state = model.predict(observation, lstm_state, done, deterministic=True)
             else:
-                action, lstm_state = model.predict(observation, lstm_state, done, deterministic=True)
-        else:
-            action = action_index
+                action = action_index
 
-        observation, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-        cumulative_reward += reward
-        step += 1
+            observation, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            cumulative_reward += reward
+            step += 1
 
-        if info["frame_consumed"]:
-            causal_fps_counts[info["current_fps"]] += 1
-            causal_fps_sum += info["current_fps"]
-            causal_ticks += 1
+            if info["frame_consumed"]:
+                causal_fps_counts[info["current_fps"]] += 1
+                causal_fps_sum += info["current_fps"]
+                causal_ticks += 1
 
-            if diagnose_probs and probs is not None:
-                # env.fps_choices is the authoritative action-index -> FPS
-                # mapping (env.step() does fps_choices[int(action)]
-                # directly) -- the actor head's logits/probs share that
-                # exact same index ordering, so probs[i] <-> fps_choices[i]
-                # always, never assumed/hardcoded here.
-                prob_str = "  ".join(
-                    f"{fmt_hz(fps)}={probs[i]:.2f}" for i, fps in enumerate(env.fps_choices))
-                print(f"[causal decision] step={step}")
-                print(f"  chosen={fmt_hz(info['current_fps'])} Hz")
-                print(f"  probs: {prob_str}")
+                if diagnose_probs and probs is not None:
+                    # env.fps_choices is the authoritative action-index -> FPS
+                    # mapping (env.step() does fps_choices[int(action)]
+                    # directly) -- the actor head's logits/probs share that
+                    # exact same index ordering, so probs[i] <-> fps_choices[i]
+                    # always, never assumed/hardcoded here.
+                    prob_str = "  ".join(
+                        f"{fmt_hz(fps)}={probs[i]:.2f}" for i, fps in enumerate(env.fps_choices))
+                    print(f"[causal decision] step={step}")
+                    print(f"  chosen={fmt_hz(info['current_fps'])} Hz")
+                    print(f"  probs: {prob_str}")
 
-                row = {"step": step, "chosen_fps": info["current_fps"]}
-                for i, fps in enumerate(env.fps_choices):
-                    row[f"prob_{fmt_hz(fps)}hz"] = float(probs[i])
-                causal_decision_rows.append(row)
+                    row = {"step": step, "chosen_fps": info["current_fps"]}
+                    for i, fps in enumerate(env.fps_choices):
+                        row[f"prob_{fmt_hz(fps)}hz"] = float(probs[i])
+                    causal_decision_rows.append(row)
 
-        step_rows.append({
-            "step": step,
-            "wall_time": info["wall_time"],
-            "sim_time": info["sim_time"],
-            "x": info["x"],
-            "y": info["y"],
-            "goal_distance_m": info["goal_distance_m"],
-            "current_fps": info["current_fps"],
-            "obs_interval": info["obs_interval"],
-            "frame_consumed": info["frame_consumed"],
-            "frame_penalty": info["frame_penalty"],
-            "frame_cost": info["frame_cost"],
-            "episode_frame_count": info["episode_frame_count"],
-            "scans_since_last_obs": info["scans_since_last_obs"],
-            "instant_reward": reward,
-            "cumulative_reward": cumulative_reward,
-            "outcome": info["outcome"],
-            "outcome_str": info["outcome_str"],
-        })
+            step_rows.append({
+                "step": step,
+                "wall_time": info["wall_time"],
+                "sim_time": info["sim_time"],
+                "x": info["x"],
+                "y": info["y"],
+                "goal_distance_m": info["goal_distance_m"],
+                "current_fps": info["current_fps"],
+                "obs_interval": info["obs_interval"],
+                "frame_consumed": info["frame_consumed"],
+                "frame_penalty": info["frame_penalty"],
+                "frame_cost": info["frame_cost"],
+                "episode_frame_count": info["episode_frame_count"],
+                "scans_since_last_obs": info["scans_since_last_obs"],
+                "instant_reward": reward,
+                "cumulative_reward": cumulative_reward,
+                "outcome": info["outcome"],
+                "outcome_str": info["outcome_str"],
+            })
+
+            if ppo_step_writer is not None:
+                # One row per completed AdaptiveFPSEnv.step() call -- i.e.
+                # one row per outer PPO transition, never per inner TD3/
+                # control tick (that granularity is only ever visible
+                # inside AdaptiveFPSEnv.step()'s own inner loop, and is
+                # summarized here only via inner_ticks/ppo_step_sim_dt).
+                # Every field below is either an existing info[...] value
+                # used directly, or one of the two counters (ppo_step,
+                # ppo_reward_cumulative) this function already owns --
+                # no value is recomputed from anything else.
+                ppo_step += 1
+                ppo_reward_cumulative += reward
+                navigation_action = info["navigation_action"]
+                ppo_step_writer.writerow({
+                    "ppo_step": ppo_step,
+                    "t_wall_s": info["wall_time"],
+                    "t_sim_s": info["sim_time"],
+                    "ppo_step_sim_dt": info["ppo_step_sim_dt"],
+                    "inner_ticks": info["inner_ticks"],
+                    "x": info["x"],
+                    "y": info["y"],
+                    "yaw": info["yaw"],
+                    "goal_distance_m": info["goal_distance_m"],
+                    "goal_distance_norm": info["goal_distance_norm"],
+                    "ppo_reward": reward,
+                    "ppo_reward_cumulative": ppo_reward_cumulative,
+                    "navigation_reward": info["navigation_reward"],
+                    "terminal_reward": info["terminal_reward"],
+                    "frame_cost_reward": info["frame_cost_reward"],
+                    "fresh_observation": info["frame_consumed"],
+                    "frame_consumed": info["frame_consumed"],
+                    "episode_frame_count": info["episode_frame_count"],
+                    "current_fps": info["current_fps"],
+                    "scan_divisor_k": info["scan_interval_k"],
+                    "obs_age_ratio": info["obs_age_ratio"],
+                    "fps_ratio": info["fps_ratio"],
+                    "frame_count_ratio": info["episode_frame_count_ratio"],
+                    "action_linear": navigation_action[0],
+                    "action_angular": navigation_action[1],
+                    "outcome": info["outcome"],
+                    "done": terminated,
+                })
+                ppo_step_file.flush()
+    finally:
+        if ppo_step_file is not None:
+            ppo_step_file.close()
 
     success = info["outcome_str"] == "SUCCESS"
     native_scans = info["native_scan_count"]
@@ -532,12 +621,17 @@ def main():
                 writer.writeheader()
 
             for ep in range(1, args.episodes + 1):
-                episode_data, step_rows, causal_decision_rows = run_episode(
-                    env, ep, action_index=action_index, requested_fps=args.fps, model=model,
-                    diagnose_probs=args.diagnose_probs)
-
+                # Created before run_episode() (not after, as steps.csv/
+                # trajectory.csv's directory used to be) so ppo_step.csv
+                # can be opened and written incrementally *during* the
+                # episode, not just assembled in memory and written at
+                # the end like steps.csv/trajectory.csv are.
                 episode_dir = os.path.join(out_dir, f"episode_{ep:04d}")
                 os.makedirs(episode_dir, exist_ok=True)
+
+                episode_data, step_rows, causal_decision_rows = run_episode(
+                    env, ep, action_index=action_index, requested_fps=args.fps, model=model,
+                    diagnose_probs=args.diagnose_probs, episode_dir=episode_dir)
 
                 with open(os.path.join(episode_dir, "steps.csv"), "w", newline="") as sf:
                     swriter = csv.DictWriter(sf, fieldnames=STEP_CSV_FIELDS)

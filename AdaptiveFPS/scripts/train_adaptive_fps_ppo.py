@@ -186,7 +186,7 @@ class Args:
     (tens of thousands of control steps), not F1TENTH's ~220-step laps"""
     resume_path: str = None
     """path to a checkpoint .pt file to resume training from"""
-    checkpoint_interval: int = 250
+    checkpoint_interval: int = 10
     """save a checkpoint every N iterations"""
 
 

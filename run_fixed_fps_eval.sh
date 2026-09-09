@@ -29,7 +29,7 @@ sleep 3
 # Evaluator
 tmux new-window -t "$SESSION" -n evaluator
 tmux send-keys -t "$SESSION:evaluator" \
-"$setup_cmd && python3 AdaptiveFPS/scripts/eval_adaptive_fps.py --fps $FPS --n-episodes $EPISODES" C-m
+"$setup_cmd && python3 AdaptiveFPS/scripts/eval.py --fps $FPS --episodes $EPISODES" C-m
 
 # gazebo_goals now waits internally (drl_gazebo.py's
 # _wait_for_initial_goal_pose_subscribers()) for all 3 required /goal_pose

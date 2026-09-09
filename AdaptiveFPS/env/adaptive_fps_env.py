@@ -63,9 +63,11 @@ from eval_adaptive_fps import (  # noqa: E402  (path must be set up first)
     FixedSensingEvaluator,
     wait_for_episode_ready,
     _safe_stop,
+    _issue_reset_recovery,
     MAX_INIT_ATTEMPTS,
     NATIVE_SCAN_HZ,
     stamp_to_sec,
+    quaternion_to_yaw,
 )
 
 sys.path.insert(0, BASE_PATH)
@@ -73,18 +75,34 @@ from AdaptiveFPS.rewards.adaptive_fps_reward import get_adaptive_reward  # noqa:
 
 # From AdaptiveFPS/action_space.txt -- reused, not re-derived.
 
+# Fixed PPO sampling rate: one AdaptiveFPSEnv.step() call represents
+# exactly PPO_DT seconds of Gazebo simulation time (measured via /clock,
+# node.latest_sim_time -- FixedSensingEvaluator._on_clock, reused
+# unmodified), decoupling PPO experience collection from the unthrottled
+# DrlStep/TD3 control-RPC rate (~500-1500 Hz, CPU/DDS-dependent). 10 Hz is
+# the fastest available sensing choice (fps_choices below), so every
+# obs_interval is an exact multiple of one PPO step:
+# 10Hz->1, 5Hz->2, 1Hz->10, 0.5Hz->20, 0.2Hz->50 PPO steps.
+PPO_RATE_HZ = 10.0
+PPO_DT = 1.0 / PPO_RATE_HZ
+
+
 class AdaptiveFPSEnv(gymnasium.Env):
-    """One Gym step() == one navigation/control transition (one step_comm
-    RPC to DRLEnvironment) -- NOT one full sensing interval. Native /scan
-    arrivals are counted independently of the control loop (see
-    FixedSensingEvaluator._on_real_scan, reused unmodified), since the
-    control loop runs at ~hundreds-to-thousands of Hz while /scan is fixed
-    at NATIVE_SCAN_HZ (~50 Hz) -- counting control steps would not measure
-    the sensing interval correctly. F1TENTH's `steps_since_last_obs`
-    counts control steps because its control frequency IS its sensing
-    reference rate; the TurtleBot equivalent is native /scan arrivals
-    (`scans_since_last_obs`, i.e. `node.scans_since_forward`), never
-    control transitions.
+    """One Gym step() == PPO_DT (0.1s) of Gazebo simulation time -- NOT one
+    navigation/control transition and NOT one full sensing interval.
+    Internally, step() runs the same control loop (one step_comm RPC to
+    DRLEnvironment per control tick) as many times as needed to advance
+    PPO_DT seconds of /clock, or until the episode terminates, whichever
+    comes first; the frozen TD3 controller and its per-tick RPC rate are
+    completely unchanged. Native /scan arrivals are counted independently
+    of the control loop (see FixedSensingEvaluator._on_real_scan, reused
+    unmodified), since the control loop runs at ~hundreds-to-thousands of
+    Hz while /scan is fixed at NATIVE_SCAN_HZ (~50 Hz) -- counting control
+    steps would not measure the sensing interval correctly. F1TENTH's
+    `steps_since_last_obs` counts control steps because its control
+    frequency IS its sensing reference rate; the TurtleBot equivalent is
+    native /scan arrivals (`scans_since_last_obs`, i.e.
+    `node.scans_since_forward`), never control transitions.
 
     Observation (frozen TD3 navigation input, section 1 of step()): the
     raw 44-D state vector DRLEnvironment's own get_state() produces --
@@ -119,7 +137,7 @@ class AdaptiveFPSEnv(gymnasium.Env):
     """
 
     def __init__(self):
-        super().__init__() 
+        super().__init__()
 
         if not rclpy.ok():
             rclpy.init()
@@ -234,7 +252,24 @@ class AdaptiveFPSEnv(gymnasium.Env):
                 f"{status} -- not starting TD3 control, episode NOT counted")
             _safe_stop(node)
             if attempt < MAX_INIT_ATTEMPTS - 1:
+                # Real recovery (not just re-verification) only when a
+                # hard reset was already the expected end-state for this
+                # slot (self._expect_reset, i.e. the previous episode
+                # ended in failure) -- issuing /reset_simulation when
+                # expect_reset is False would teleport the robot away
+                # from the "continue from where it succeeded" state the
+                # non-reset path is intentionally preserving, which would
+                # be a real behavior change, not a recovery.
+                if self._expect_reset:
+                    node.get_logger().warning(
+                        f"[episode {node.episode_index}] initiating reset recovery...")
+                    _issue_reset_recovery(node)
+                    node.get_logger().warning(
+                        f"[episode {node.episode_index}] reset recovery issued")
                 util.unpause_simulation(node, 0)
+                if self._expect_reset:
+                    node.get_logger().warning(
+                        f"[episode {node.episode_index}] retrying episode-ready verification...")
 
         if not ready:
             # Fail clearly rather than silently returning a bogus
@@ -246,8 +281,9 @@ class AdaptiveFPSEnv(gymnasium.Env):
 
         # Save current goal
         node.goal_baseline = node.goal_msg_count
+        retry_word = "recovery" if (attempt and self._expect_reset) else "retries"
         node.get_logger().info(
-            f"[episode {node.episode_index}] ready after {attempt} retries: "
+            f"[episode {node.episode_index}] ready after {attempt} {retry_word}: "
             f"initial_fps={self.current_fps} obs_interval={self.obs_interval}")
 
         # Reset Observation and scan ages
@@ -256,8 +292,8 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self.world_step_count = 0
         self.prev_navigation_action = [0.0, 0.0]
         self.native_scan_count = 1 #GT scan acquired
-        
-        #last_gated_scan_count is the last saved value of scans 
+
+        #last_gated_scan_count is the last saved value of scans
         # that have been forwarded to the navigation stack
         self.last_gated_scan_count = node.gated_scan_count
         self.episode_frame_count = 1 #Counted frame/scan acquired
@@ -299,63 +335,108 @@ class AdaptiveFPSEnv(gymnasium.Env):
 
     def step(self, action):
         node = self.node
-        self.world_step_count += 1
         requested_fps = self.fps_choices[int(action)]
 
         # ---------------------------------
-        # 1. Frozen navigation uses currently held observation
+        # PPO-step sim-time boundary (see PPO_RATE_HZ/PPO_DT above).
+        # step_start_sim_time is captured once, before any control tick in
+        # this PPO step runs, so the boundary check below always measures
+        # elapsed /clock time from the start of THIS PPO step, regardless
+        # of how many inner control ticks it takes to reach it.
         # ---------------------------------
-        navigation_action = node.model.get_action(self.current_observation, False, self.world_step_count, False)
+        step_start_sim_time = node.latest_sim_time
+        frame_consumed = False
+        inner_ticks = 0  # diagnostic only -- control ticks consumed by this one PPO step
+
+        while True:
+            inner_ticks += 1
+            self.world_step_count += 1
+
+            # ---------------------------------
+            # 1. Frozen navigation uses currently held observation
+            # ---------------------------------
+            navigation_action = node.model.get_action(self.current_observation, False, self.world_step_count, False)
+
+            # ---------------------------------
+            # 2. One control transition
+            # ---------------------------------
+            observation, nav_reward, done, outcome, dist_trav = self._navigation_step(navigation_action)
+            self.current_observation = observation
+            # Updated immediately (not after reward/section 4 below) so
+            # that if this PPO step spans further inner control ticks,
+            # each one's _navigation_step() call receives the true
+            # immediately-preceding action -- exactly the same per-tick
+            # causal ordering the (formerly single-tick) step() always had.
+            self.prev_navigation_action = copy.deepcopy(navigation_action)
+
+            # ---------------------------------
+            # 3. Sampling Timer
+            # ---------------------------------
+            new_gated_scans = node.gated_scan_count - self.last_gated_scan_count
+            tick_frame_consumed = new_gated_scans > 0
+            self.last_gated_scan_count = node.gated_scan_count
+
+            if tick_frame_consumed:
+                frame_consumed = True  # sticky for the whole PPO step -- at most one
+                                        # tick per PPO step can be causal, since 10 Hz
+                                        # (1 PPO step) is the fastest sensing choice.
+                self.episode_frame_count += new_gated_scans  # exact, even if >1 scan
+                                                               # forwarded within one step's gap
+                # The action selected at THIS sampling instant controls the
+                # FUTURE sensing rate -- never retroactive to navigation_action
+                # above, which already used the previously-held (or
+                # just-forced) scan. _on_real_scan re-reads node.k fresh on
+                # every real /scan arrival, so this takes effect starting
+                # with the NEXT interval only.
+                self.current_fps = requested_fps
+                self.obs_interval = max(1, round(NATIVE_SCAN_HZ / self.current_fps))
+                node.k = self.obs_interval
+
+            terminated = bool(done)
+            if terminated:
+                # Terminate the PPO step immediately on episode end, even
+                # mid-way through the PPO_DT window -- the terminal
+                # reward/outcome below is preserved exactly as it always
+                # was for a single-tick step().
+                break
+
+            if (step_start_sim_time is not None and node.latest_sim_time is not None
+                    and node.latest_sim_time >= step_start_sim_time + PPO_DT):
+                break
+            # Otherwise: PPO_DT not yet elapsed and the episode hasn't
+            # ended -- run another control tick (loop). The TD3 controller
+            # and its RPC rate are completely unaffected by this loop.
 
         # ---------------------------------
-        # 2. One control transition
+        # 4. Reward -- computed once per PPO step (not per inner control
+        # tick), from the FINAL inner tick's state vs. this PPO step's
+        # starting goal distance. This is the same single-reward formula
+        # already used for a single control tick, just evaluated across
+        # the (now possibly multi-tick) PPO step -- no reward accumulation
+        # or variable-duration discounting is introduced.
         # ---------------------------------
-        observation, nav_reward, done, outcome, dist_trav = self._navigation_step(navigation_action)
-        self.current_observation = observation
-
-        # ---------------------------------
-        # 3. Sampling Timer
-        # ---------------------------------
-        new_gated_scans = node.gated_scan_count - self.last_gated_scan_count
-        frame_consumed = new_gated_scans > 0
-        self.last_gated_scan_count = node.gated_scan_count
-
-        if frame_consumed:
-            self.episode_frame_count += new_gated_scans  # exact, even if >1 scan
-                                                           # forwarded within one step's gap
-            # The action selected at THIS sampling instant controls the
-            # FUTURE sensing rate -- never retroactive to navigation_action
-            # above, which already used the previously-held (or
-            # just-forced) scan. _on_real_scan re-reads node.k fresh on
-            # every real /scan arrival, so this takes effect starting
-            # with the NEXT interval only.
-            self.current_fps = requested_fps
-            self.obs_interval = max(1, round(NATIVE_SCAN_HZ / self.current_fps))
-            node.k = self.obs_interval
-
-
-        # ---------------------------------
-        # 4. Reward
-        # ---------------------------------
-        goal_distance_m = observation[NUM_SCAN_SAMPLES] * MAX_GOAL_DISTANCE
+        goal_distance_norm = float(observation[NUM_SCAN_SAMPLES])
+        goal_distance_m = goal_distance_norm * MAX_GOAL_DISTANCE
         adaptive_reward = get_adaptive_reward(
             self._previous_goal_distance, goal_distance_m, self._initial_goal_distance)
         self._previous_goal_distance = goal_distance_m
         frame_penalty = self.frame_cost if frame_consumed else 0.0
+        # Reward decomposition, exposed in info (see section 6) so a
+        # logger never has to recompute/re-derive these -- by
+        # construction, navigation_reward + frame_cost_reward +
+        # terminal_reward == reward, exactly.
+        navigation_reward = adaptive_reward
+        frame_cost_reward = -frame_penalty
+        terminal_reward = 0.0
         reward = adaptive_reward - frame_penalty
 
-
-        self.prev_navigation_action = copy.deepcopy(navigation_action)
-        terminated = bool(done)
         truncated = False  # DRLEnvironment's own TIMEOUT outcome is already
                             # reported via `done`/`outcome`; no separate
                             # Gym-level truncation concept is introduced here.
 
         if terminated:
-            if outcome == SUCCESS:
-                reward += 0.5
-            else:
-                reward -= 0.5
+            terminal_reward = 1.5 if outcome == SUCCESS else -1.5
+            reward += terminal_reward
             util.pause_simulation(node, 0)
             self._expect_reset = not (outcome == SUCCESS)
 
@@ -392,10 +473,12 @@ class AdaptiveFPSEnv(gymnasium.Env):
         # subscriber, no effect on control/reward/timing.
         # ---------------------------------
         x = y = float("nan")
+        yaw = float("nan")
         sim_time = None
         if node.latest_odom is not None:
             x = node.latest_odom.pose.pose.position.x
             y = node.latest_odom.pose.pose.position.y
+            yaw = quaternion_to_yaw(node.latest_odom.pose.pose.orientation)
             if self._episode_start_sim is not None:
                 sim_time = stamp_to_sec(node.latest_odom.header.stamp) - self._episode_start_sim
         wall_time = time.perf_counter() - self._episode_start_wall
@@ -420,14 +503,35 @@ class AdaptiveFPSEnv(gymnasium.Env):
             "native_scan_count": self.native_scan_count,
             "x": x,
             "y": y,
+            "yaw": yaw,
             "wall_time": wall_time,
             "sim_time": sim_time,
             "fps_ratio": fps_ratio,
             "obs_age_ratio": obs_age_ratio,
             "episode_frame_count_ratio": episode_frame_count_ratio,
+            "goal_distance_norm": goal_distance_norm,
+            # Reward decomposition -- navigation_reward + frame_cost_reward
+            # + terminal_reward == the (float) reward this step() call
+            # returns, exactly. navigation_reward is the goal-progress
+            # component of THIS (PPO/adaptive) reward -- distinct from
+            # nav_reward above, which is the raw per-tick DRLEnvironment/
+            # TD3 reward, a separate, older diagnostic never used in the
+            # PPO reward calculation.
+            "navigation_reward": navigation_reward,
+            "frame_cost_reward": frame_cost_reward,
+            "terminal_reward": terminal_reward,
             # backward-compatible aliases
             "scan_interval_k": self.obs_interval,
             "scans_since_last_observation": node.scans_since_forward,
+            # PPO-timestep-decoupling diagnostics (temporary, for verifying
+            # the PPO_RATE_HZ/PPO_DT behavior) -- inner_ticks = number of
+            # control ticks this one PPO step consumed; ppo_step_sim_dt =
+            # actual /clock time elapsed during this PPO step, should be
+            # >= PPO_DT (0.1s) except on episode-terminating steps.
+            "inner_ticks": inner_ticks,
+            "ppo_step_sim_dt": (
+                node.latest_sim_time - step_start_sim_time
+                if (step_start_sim_time is not None and node.latest_sim_time is not None) else None),
         }
         return ppo_observation, float(reward), terminated, truncated, info
 

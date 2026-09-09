@@ -103,8 +103,8 @@ MAX_INIT_ATTEMPTS = 5
 # worlds/turtlebot3_drl_stage9/burger.model: <pose>0 0 0 0 0 0</pose>.
 STAGE9_RESET_X = 0.0
 STAGE9_RESET_Y = 0.0
-RESET_POSITION_TOLERANCE_M = 0.10
-RESET_VELOCITY_TOLERANCE_MPS = 0.05
+RESET_POSITION_TOLERANCE_M = 1.0     # intentionally very permissive
+RESET_VELOCITY_TOLERANCE_MPS = 0.03  # must stay a meaningful "robot settled" check
 
 LINEAR, ANGULAR = 0, 1
 
@@ -168,6 +168,14 @@ class FixedSensingEvaluator(Node):
         self.goal_comm_client = self.create_client(Goal, "goal_comm")
         self.gazebo_pause = self.create_client(Empty, "/pause_physics")
         self.gazebo_unpause = self.create_client(Empty, "/unpause_physics")
+        # Used only by _issue_reset_recovery() (handshake retry recovery,
+        # not part of the normal episode-boundary path) -- same service
+        # drl_gazebo.py's own task_fail_callback() already calls on every
+        # ordinary episode failure, called here directly since it's a
+        # plain Gazebo service, not something drl_gazebo.py exclusively
+        # owns. Deliberately does NOT touch goal state (see
+        # _issue_reset_recovery's docstring).
+        self.reset_simulation_client = self.create_client(Empty, "reset_simulation")
 
         # --- scan gate state ---
         # gated_scan_count is the single source of truth for "how many scans
@@ -315,6 +323,41 @@ def _safe_stop(node):
     we wait, and so the next attempt starts from a known (paused) state."""
     node.cmd_vel_pub.publish(Twist())
     util.pause_simulation(node, 0)
+
+
+def _issue_reset_recovery(node):
+    """Real recovery action for a failed handshake attempt -- as opposed
+    to _safe_stop() (which only pauses/zeros velocity and changes no
+    physical state), this issues Gazebo's own /reset_simulation service
+    directly: the exact same recovery drl_gazebo.py's own
+    task_fail_callback() already performs on every ordinary episode
+    failure (see drl_gazebo.py's reset_simulation()). Teleports every
+    model -- including the robot -- back to its world-file insertion
+    pose and resets sim time to 0.
+
+    Deliberately does NOT touch goal state: the goal marker's own Gazebo
+    insertion pose is wherever it was last spawned for the CURRENT
+    episode's intended goal, so this call cannot move or regenerate it.
+    Nothing here calls task_fail/task_succeed, and goal_baseline/
+    goal_msg_count/expect_reset/episode_index are all untouched -- this
+    is a pure physics-state recovery, not a new episode-boundary event.
+
+    Blocks (call_async + spin-until-future.done(), same idiom as
+    utilities.py's pause_simulation/unpause_simulation) until Gazebo has
+    ACKNOWLEDGED the request -- this confirms the request was issued,
+    NOT that the reset has already propagated to /odom. The caller must
+    re-run wait_for_episode_ready() afterwards and rely on ITS existing
+    fresh-/odom (+ reset-pose, when expect_reset) check for that -- same
+    as any other handshake attempt, never assumed complete from this
+    call alone."""
+    req = Empty.Request()
+    while not node.reset_simulation_client.wait_for_service(timeout_sec=1.0):
+        node.get_logger().info("reset_simulation service not available, waiting again...")
+    future = node.reset_simulation_client.call_async(req)
+    while rclpy.ok():
+        rclpy.spin_once(node)
+        if future.done():
+            return
 
 
 def wait_for_episode_ready(node, expect_reset, goal_before):

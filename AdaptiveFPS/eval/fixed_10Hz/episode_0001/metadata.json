@@ -12,17 +12,17 @@
   "initial_obs_interval": 5,
   "final_current_fps": 10.0,
   "final_obs_interval": 5,
-  "n_steps": 59388,
-  "episode_return": 0.9617580597657479,
-  "fresh_observations": 400,
-  "native_scans": 1997,
+  "n_steps": 112,
+  "episode_return": 2.4207451001550884,
+  "fresh_observations": 120,
+  "native_scans": 599,
   "outcome": 1,
   "outcome_str": "SUCCESS",
   "success": true,
   "mean_fps": 10.0,
-  "causal_ticks": 399,
+  "causal_ticks": 111,
   "causal_fps_action_counts": {
-    "10.0": 399
+    "10.0": 111
   },
   "requested_fixed_fps": 10.0,
   "fixed_action_index": 4

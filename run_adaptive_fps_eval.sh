@@ -31,7 +31,7 @@ sleep 3
 tmux new-window -t "$SESSION" -n evaluator
 
 tmux send-keys -t "$SESSION:evaluator" \
-  "$setup_cmd && python3 AdaptiveFPS/scripts/evaluate_fixed_policy_env.py \
+  "$setup_cmd && python3 AdaptiveFPS/scripts/eval.py \
   --model $MODEL\
   --episodes $EPISODES \
   --diagnose-probs" C-m
