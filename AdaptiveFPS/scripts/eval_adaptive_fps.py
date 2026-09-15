@@ -100,9 +100,11 @@ EPISODE_READY_TIMEOUT = 10.0
 MAX_INIT_ATTEMPTS = 5
 
 # Stage 9's robot reset pose, verified directly from
-# worlds/turtlebot3_drl_stage9/burger.model: <pose>0 0 0 0 0 0</pose>.
-STAGE9_RESET_X = 0.0
-STAGE9_RESET_Y = 0.0
+# worlds/turtlebot3_drl_stage9/burger.model: <pose>2.5 2.5 0 0 0 ...</pose>
+# (yaw pointed toward (0.0, 2.0) -- position only matters here, since
+# _at_reset_pose() below never checks orientation).
+STAGE9_RESET_X = 2.5
+STAGE9_RESET_Y = 2.5
 RESET_POSITION_TOLERANCE_M = 1.0     # intentionally very permissive
 RESET_VELOCITY_TOLERANCE_MPS = 0.03  # must stay a meaningful "robot settled" check
 

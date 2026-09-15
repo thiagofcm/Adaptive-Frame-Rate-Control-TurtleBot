@@ -11,3 +11,12 @@ to exit tmux Ctrl+B then D
 source /opt/ros/foxy/setup.bash
 source install/setup.bash
 colcon build --packages-select turtlebot3_drl
+
+
+obstacle model	spawn pose	plugin (movement)
+turtlebot3_drl_obstacle1	(2, 2)	libobstacle7.so
+turtlebot3_drl_obstacle2	(-2, -2)	libobstacle8.so
+turtlebot3_drl_obstacle3	(2, -2)	libobstacle9.so
+turtlebot3_drl_obstacle4	(-2, 2)	libobstacle10.so
+turtlebot3_drl_obstacle5	(0, -2)	libobstacle11.so
+turtlebot3_drl_obstacle6	(0, 2)	libobstacle12.so

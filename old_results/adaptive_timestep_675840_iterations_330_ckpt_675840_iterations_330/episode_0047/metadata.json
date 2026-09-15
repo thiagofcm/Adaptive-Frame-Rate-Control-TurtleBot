@@ -1,0 +1,30 @@
+{
+  "episode": 47,
+  "policy_type": "adaptive",
+  "environment_fps_choices": [
+    0.2,
+    0.5,
+    1.0,
+    5.0,
+    10.0
+  ],
+  "initial_current_fps": 10.0,
+  "initial_obs_interval": 5,
+  "final_current_fps": 1.0,
+  "final_obs_interval": 50,
+  "n_steps": 93,
+  "episode_return": -1.399118311439728,
+  "fresh_observations": 22,
+  "native_scans": 726,
+  "outcome": 2,
+  "outcome_str": "COLL_WALL",
+  "success": false,
+  "mean_fps": 2.3333333333333335,
+  "causal_ticks": 21,
+  "causal_fps_action_counts": {
+    "1.0": 14,
+    "5.0": 7
+  },
+  "model_path": "AdaptiveFPS/runs/adaptive_fps_turtlebot_fc_0.003_ckpts/ckpts/timestep_675840_iterations_330/ckpt_675840_iterations_330.pt",
+  "lstm_hidden_size": 64
+}

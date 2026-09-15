@@ -1,0 +1,30 @@
+{
+  "episode": 10,
+  "policy_type": "adaptive",
+  "environment_fps_choices": [
+    0.2,
+    0.5,
+    1.0,
+    5.0,
+    10.0
+  ],
+  "initial_current_fps": 10.0,
+  "initial_obs_interval": 5,
+  "final_current_fps": 5.0,
+  "final_obs_interval": 10,
+  "n_steps": 44,
+  "episode_return": 2.3015356602509285,
+  "fresh_observations": 12,
+  "native_scans": 229,
+  "outcome": 1,
+  "outcome_str": "SUCCESS",
+  "success": true,
+  "mean_fps": 3.909090909090909,
+  "causal_ticks": 11,
+  "causal_fps_action_counts": {
+    "1.0": 3,
+    "5.0": 8
+  },
+  "model_path": "AdaptiveFPS/runs/adaptive_fps_fc_0.005/model.pt",
+  "lstm_hidden_size": 64
+}

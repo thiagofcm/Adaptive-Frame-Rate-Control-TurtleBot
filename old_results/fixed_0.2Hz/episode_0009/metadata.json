@@ -1,0 +1,29 @@
+{
+  "episode": 9,
+  "policy_type": "fixed",
+  "environment_fps_choices": [
+    0.2,
+    0.5,
+    1.0,
+    5.0,
+    10.0
+  ],
+  "initial_current_fps": 10.0,
+  "initial_obs_interval": 5,
+  "final_current_fps": 0.2,
+  "final_obs_interval": 250,
+  "n_steps": 243,
+  "episode_return": -1.2420578641178608,
+  "fresh_observations": 8,
+  "native_scans": 1506,
+  "outcome": 3,
+  "outcome_str": "COLL_OBST",
+  "success": false,
+  "mean_fps": 0.19999999999999998,
+  "causal_ticks": 7,
+  "causal_fps_action_counts": {
+    "0.2": 7
+  },
+  "requested_fixed_fps": 0.2,
+  "fixed_action_index": 0
+}

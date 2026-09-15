@@ -45,6 +45,14 @@ from AdaptiveFPS.env.adaptive_fps_env import AdaptiveFPSEnv  # noqa: E402
 sys.path.insert(0, os.path.join(os.environ["DRLNAV_BASE_PATH"], "AdaptiveFPS", "scripts"))
 from eval_adaptive_fps import fmt_hz  # noqa: E402  (reused, not re-derived)
 
+sys.path.insert(0, os.path.join(os.environ["DRLNAV_BASE_PATH"], "tools", "episode_recorder"))
+from record_episode import load_world_geometry  # noqa: E402  (reused, not re-derived --
+                                                  # same SDF-parsing used by FixedFPS's
+                                                  # EpisodeRecorder, for wall geometry only;
+                                                  # AdaptiveFPSEnv's own obstacle/lidar
+                                                  # recording is separate, see
+                                                  # get_recording_arrays())
+
 EPISODE_CSV_FIELDS = [
     "episode", "policy_type", "fixed_fps", "mean_fps", "success", "outcome", "outcome_str",
     "n_steps", "episode_return", "fresh_observations", "native_scans",
@@ -59,7 +67,11 @@ STEP_CSV_FIELDS = [
     "outcome", "outcome_str",
 ]
 
-TRAJECTORY_CSV_FIELDS = ["step", "x", "y", "wall_time", "sim_time"]
+# Schema matches tools/episode_recorder/record_episode.py's
+# EpisodeRecorder trajectory.csv exactly (t_wall/t_sim naming, plus
+# yaw/goal_x/goal_y), so make_video_fps_v2.py can consume either
+# source unmodified.
+TRAJECTORY_CSV_FIELDS = ["t_wall", "t_sim", "x", "y", "yaw", "goal_x", "goal_y"]
 
 # One row per completed AdaptiveFPSEnv.step() call (one outer PPO
 # transition -- since the PPO_RATE_HZ/PPO_DT change, step() already
@@ -299,6 +311,9 @@ def run_episode(env, episode_num, action_index=None, requested_fps=None, model=N
                 "sim_time": info["sim_time"],
                 "x": info["x"],
                 "y": info["y"],
+                "yaw": info["yaw"],
+                "goal_x": info["goal_x"],
+                "goal_y": info["goal_y"],
                 "goal_distance_m": info["goal_distance_m"],
                 "current_fps": info["current_fps"],
                 "obs_interval": info["obs_interval"],
@@ -559,7 +574,12 @@ def main():
                               "(argmax) action selection is unaffected -- diagnostic only, off by default.")
     args = parser.parse_args()
 
-    env = AdaptiveFPSEnv()
+    # reset_on_success=True: evaluation-only -- every episode starts from
+    # the same fixed reset pose regardless of outcome, instead of a
+    # SUCCESS leaving the robot wherever it stopped. Improves cross-policy
+    # comparability; training (train_adaptive_fps_ppo.py) keeps the
+    # default (False), unaffected.
+    env = AdaptiveFPSEnv(reset_on_success=True)
     try:
         eval_root = os.path.join(os.environ["DRLNAV_BASE_PATH"], "AdaptiveFPS", "eval")
 
@@ -608,6 +628,24 @@ def main():
         os.makedirs(out_dir, exist_ok=True)
         atexit.register(summarize_results, eval_root)
 
+        # Best-effort, once per run: same static-wall-geometry snapshot
+        # FixedFPS's EpisodeRecorder writes (record_episode.py's
+        # Episode._write_world_geometry) -- never raises, since
+        # trajectory/lidar/obstacle recording must proceed without it.
+        world_geometry_path = os.path.join(out_dir, "world_geometry.json")
+        if not os.path.exists(world_geometry_path):
+            try:
+                with open("/tmp/drlnav_current_stage.txt") as f:
+                    stage = int(f.read())
+                geometry = load_world_geometry(os.environ["DRLNAV_BASE_PATH"], stage)
+                with open(world_geometry_path, "w") as f:
+                    json.dump(geometry, f, indent=2)
+                print(
+                    f"  world_geometry.json written for stage {stage} "
+                    f"({len(geometry['walls'])} wall segments from {geometry['source_models']})")
+            except Exception as exc:
+                print(f"  could not record world geometry, continuing without it: {exc}")
+
         print(f"  episodes:      {args.episodes}")
         print(f"  output dir:    {out_dir}")
 
@@ -634,16 +672,36 @@ def main():
                     diagnose_probs=args.diagnose_probs, episode_dir=episode_dir)
 
                 with open(os.path.join(episode_dir, "steps.csv"), "w", newline="") as sf:
-                    swriter = csv.DictWriter(sf, fieldnames=STEP_CSV_FIELDS)
+                    swriter = csv.DictWriter(sf, fieldnames=STEP_CSV_FIELDS, extrasaction="ignore")
                     swriter.writeheader()
                     swriter.writerows(step_rows)
 
                 # Same per-step data already collected above -- no separate
                 # ROS recorder/subscriber, just a projection to its own file.
+                # Explicit key rename (wall_time/sim_time -> t_wall/t_sim)
+                # to match record_episode.py's EpisodeRecorder schema, which
+                # make_video_fps_v2.py expects.
                 with open(os.path.join(episode_dir, "trajectory.csv"), "w", newline="") as tf:
                     twriter = csv.DictWriter(tf, fieldnames=TRAJECTORY_CSV_FIELDS)
                     twriter.writeheader()
-                    twriter.writerows({k: row[k] for k in TRAJECTORY_CSV_FIELDS} for row in step_rows)
+                    twriter.writerows({
+                        "t_wall": row["wall_time"],
+                        "t_sim": row["sim_time"],
+                        "x": row["x"],
+                        "y": row["y"],
+                        "yaw": row["yaw"],
+                        "goal_x": row["goal_x"],
+                        "goal_y": row["goal_y"],
+                    } for row in step_rows)
+
+                # env-side lidar/obstacle recording, matching
+                # record_episode.py's EpisodeRecorder npz schema exactly
+                # (see AdaptiveFPSEnv.get_recording_arrays()) so this file
+                # can be consumed the same way FixedFPS's lidar.npz/
+                # obstacles.npz already are.
+                lidar_arrays, obstacle_arrays = env.get_recording_arrays()
+                np.savez_compressed(os.path.join(episode_dir, "lidar.npz"), **lidar_arrays)
+                np.savez_compressed(os.path.join(episode_dir, "obstacles.npz"), **obstacle_arrays)
 
                 if causal_decision_rows:
                     causal_fields = CAUSAL_DECISIONS_CSV_BASE_FIELDS + [

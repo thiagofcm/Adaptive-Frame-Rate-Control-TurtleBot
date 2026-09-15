@@ -102,7 +102,13 @@
     </model>
 
     <include>
-      <pose>0 0 0 0 0 0</pose>
+      <!-- Robot reset pose (also the authoritative spawn point Gazebo's
+           /reset_simulation restores to). yaw=-2.9441970937399127 rad
+           (-168.69 deg) points from (2.5, 2.5) toward (0.0, 2.0).
+           STAGE9_RESET_X/STAGE9_RESET_Y in eval_adaptive_fps.py must be
+           kept at (2.5, 2.5) to match (position only; yaw is not
+           checked by the handshake's _at_reset_pose()). -->
+      <pose>2.5 2.5 0 0 0 -2.9441970937399127</pose>
       <uri>model://turtlebot3_burger</uri>
     </include>
 

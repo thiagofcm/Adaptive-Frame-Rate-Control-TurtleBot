@@ -1,0 +1,29 @@
+{
+  "episode": 7,
+  "policy_type": "fixed",
+  "environment_fps_choices": [
+    0.2,
+    0.5,
+    1.0,
+    5.0,
+    10.0
+  ],
+  "initial_current_fps": 10.0,
+  "initial_obs_interval": 5,
+  "final_current_fps": 1.0,
+  "final_obs_interval": 50,
+  "n_steps": 71,
+  "episode_return": 2.375985555661062,
+  "fresh_observations": 9,
+  "native_scans": 385,
+  "outcome": 1,
+  "outcome_str": "SUCCESS",
+  "success": true,
+  "mean_fps": 1.0,
+  "causal_ticks": 8,
+  "causal_fps_action_counts": {
+    "1.0": 8
+  },
+  "requested_fixed_fps": 1.0,
+  "fixed_action_index": 2
+}

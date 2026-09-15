@@ -1,0 +1,29 @@
+{
+  "episode": 4,
+  "policy_type": "fixed",
+  "environment_fps_choices": [
+    0.2,
+    0.5,
+    1.0,
+    5.0,
+    10.0
+  ],
+  "initial_current_fps": 10.0,
+  "initial_obs_interval": 5,
+  "final_current_fps": 0.5,
+  "final_obs_interval": 100,
+  "n_steps": 147,
+  "episode_return": -1.570444147511555,
+  "fresh_observations": 12,
+  "native_scans": 1028,
+  "outcome": 5,
+  "outcome_str": "TUMBLE",
+  "success": false,
+  "mean_fps": 0.5,
+  "causal_ticks": 11,
+  "causal_fps_action_counts": {
+    "0.5": 11
+  },
+  "requested_fixed_fps": 0.5,
+  "fixed_action_index": 1
+}

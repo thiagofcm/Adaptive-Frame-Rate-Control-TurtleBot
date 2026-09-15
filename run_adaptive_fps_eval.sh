@@ -2,12 +2,12 @@
 
 set -e
 
-SESSION="adaptivefps"
+SESSION="eval_adaptive_fps"
 WORKSPACE="/home/turtlebot3_drlnav"
 
 #FPS="${1:-10}"
 EPISODES="${1:-10}"
-MODEL="AdaptiveFPS/runs/adaptive_fps_turtlebot_08-09-16-18-28/model.pt"
+MODEL="AdaptiveFPS/runs/adaptive_fps_fc_0.005/model.pt"
 
 setup_cmd="cd $WORKSPACE && source /opt/ros/foxy/setup.bash && source install/setup.bash && export TURTLEBOT3_MODEL=burger"
 

@@ -29,7 +29,9 @@ sleep 3
 # PPO trainer
 tmux new-window -t "$SESSION" -n trainer
 tmux send-keys -t "$SESSION:trainer" \
-"$setup_cmd && python3 AdaptiveFPS/scripts/train_adaptive_fps_ppo.py --total-timesteps $TOTAL_TIMESTEPS --num-steps $NUM_STEPS" C-m
+"$setup_cmd && python3 AdaptiveFPS/scripts/train_adaptive_fps_ppo.py --total-timesteps $TOTAL_TIMESTEPS --num-steps $NUM_STEPS " C-m
+
+# --resume-path AdaptiveFPS/runs/adaptive_fps_turtlebot_09-09-14-19-39/ckpts/timestep_245760_iterations_120/ckpt_245760_iterations_120.pt 
 
 # gazebo_goals waits internally for the required /goal_pose subscribers
 # before publishing the first goal. This short delay is only for cleaner

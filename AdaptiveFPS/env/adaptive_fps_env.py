@@ -50,8 +50,10 @@ import gymnasium
 from gymnasium import spaces
 
 import rclpy
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
+from nav_msgs.msg import Odometry
+from std_msgs.msg import Empty as EmptyMsg
 
 from turtlebot3_drl.common import utilities as util
 from turtlebot3_drl.common.settings import SUCCESS, EPISODE_TIMEOUT_SECONDS
@@ -136,8 +138,15 @@ class AdaptiveFPSEnv(gymnasium.Env):
     access to any shared counter.
     """
 
-    def __init__(self):
+    def __init__(self, reset_on_success=False):
         super().__init__()
+
+        # Off by default -- training relies on a SUCCESS leaving the
+        # robot wherever it stopped ("continue from where it succeeded").
+        # eval.py opts in (reset_on_success=True) so every episode starts
+        # from the same fixed reset pose regardless of outcome, for
+        # cross-policy comparability. See reset() for where this is used.
+        self._reset_on_success = reset_on_success
 
         if not rclpy.ok():
             rclpy.init()
@@ -145,6 +154,37 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self.node = FixedSensingEvaluator()
         self.native_scan_count = 0
         self.node.create_subscription(LaserScan, "scan", self._on_native_scan, qos_profile_sensor_data)
+        # Recording only (never read by control/reward/sensing/PPO logic
+        # below) -- same "obstacle/odom" topic DRLEnvironment itself
+        # already subscribes to (drl_environment.py's
+        # obstacle_odom_callback, for the dynamic-vs-wall collision
+        # split), and the same topic tools/episode_recorder/
+        # record_episode.py's EpisodeRecorder already records from, for
+        # the FixedFPS study -- reused here as the source for this env's
+        # own optional per-episode obstacles.npz export (see
+        # get_recording_arrays()/_on_obstacle_odom below).
+        self.node.create_subscription(
+            Odometry, "obstacle/odom", self._on_obstacle_odom, QoSProfile(depth=10))
+
+        # Per-episode recording buffers (lidar + obstacle positions over
+        # time) -- populated passively by _on_native_scan/_on_obstacle_odom
+        # whenever a recording episode is active (see reset()), read out
+        # once per episode by get_recording_arrays(). Never fed back into
+        # the observation/reward/control path -- purely for the
+        # evaluator's optional lidar.npz/obstacles.npz export, mirroring
+        # record_episode.py's Episode.add_scan()/add_obstacle() schema so
+        # existing tooling (tools/episode_recorder/make_video_fps_v2.py)
+        # reads either source unmodified.
+        self._recording_active = False
+        self._lidar_t_wall = []
+        self._lidar_t_sim = []
+        self._lidar_ranges = []
+        self._obstacle_t_wall = []
+        self._obstacle_t_sim = []
+        self._obstacle_frame_id = []
+        self._obstacle_x = []
+        self._obstacle_y = []
+        self._obstacle_yaw = []
 
         # Action Space definition
         self.fps_choices = [0.2, 0.5, 1.0, 5.0, 10.0]
@@ -188,10 +228,75 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self.current_observation = None
         self._initial_goal_distance = None
         self._previous_goal_distance = None
-        self.frame_cost = 0.0
+        self.frame_cost = 0.0025
 
     def _on_native_scan(self, msg):
         self.native_scan_count += 1
+        if self._recording_active:
+            t_wall, t_sim = self._recording_times(msg.header.stamp)
+            self._lidar_t_wall.append(t_wall)
+            self._lidar_t_sim.append(t_sim)
+            self._lidar_ranges.append(list(msg.ranges))
+
+    def _on_obstacle_odom(self, msg):
+        if not self._recording_active:
+            return
+        t_wall, t_sim = self._recording_times(msg.header.stamp)
+        self._obstacle_t_wall.append(t_wall)
+        self._obstacle_t_sim.append(t_sim)
+        self._obstacle_frame_id.append(msg.child_frame_id)
+        self._obstacle_x.append(msg.pose.pose.position.x)
+        self._obstacle_y.append(msg.pose.pose.position.y)
+        self._obstacle_yaw.append(quaternion_to_yaw(msg.pose.pose.orientation))
+
+    def _recording_times(self, stamp):
+        """(t_wall, t_sim) relative to this episode's origin, same
+        convention as the x/y/wall_time/sim_time diagnostics in step()
+        (reset()'s _episode_start_wall/_episode_start_sim) -- t_sim is
+        None if sim time wasn't available at episode start, matching
+        record_episode.py's own NaN-on-missing convention (translated to
+        None here, NaN only at the final np.array() call in eval.py)."""
+        t_wall = time.perf_counter() - self._episode_start_wall
+        t_sim = (stamp_to_sec(stamp) - self._episode_start_sim) if self._episode_start_sim is not None else None
+        return t_wall, t_sim
+
+    def get_recording_arrays(self):
+        """Snapshot this episode's buffered lidar/obstacle recordings as
+        numpy arrays, in exactly the schema
+        tools/episode_recorder/record_episode.py's Episode.write() saves
+        to lidar.npz/obstacles.npz -- so the same
+        tools/episode_recorder/make_video_fps_v2.py reads either source
+        unmodified. Intended to be called once, right after an episode
+        ends (terminated/truncated=True), by whichever script owns
+        writing eval output files (this env itself never writes files,
+        matching its existing "no evaluation/export logic" boundary --
+        see class docstring). Does not clear/reset anything itself; the
+        next reset() call does that.
+
+        Returns (lidar_dict, obstacle_dict), each a plain dict of
+        already-`np.array`-wrapped fields ready for
+        np.savez_compressed(path, **lidar_dict)."""
+        if self._lidar_ranges:
+            max_len = max(len(r) for r in self._lidar_ranges)
+            ranges_arr = np.full((len(self._lidar_ranges), max_len), np.nan, dtype=np.float32)
+            for i, r in enumerate(self._lidar_ranges):
+                ranges_arr[i, :len(r)] = r
+        else:
+            ranges_arr = np.zeros((0, 0), dtype=np.float32)
+        lidar = {
+            "t_wall": np.array(self._lidar_t_wall, dtype=np.float64),
+            "t_sim": np.array([t if t is not None else np.nan for t in self._lidar_t_sim], dtype=np.float64),
+            "ranges": ranges_arr,
+        }
+        obstacles = {
+            "t_wall": np.array(self._obstacle_t_wall, dtype=np.float64),
+            "t_sim": np.array([t if t is not None else np.nan for t in self._obstacle_t_sim], dtype=np.float64),
+            "frame_id": np.array(self._obstacle_frame_id, dtype="<U64"),
+            "x": np.array(self._obstacle_x, dtype=np.float64),
+            "y": np.array(self._obstacle_y, dtype=np.float64),
+            "yaw": np.array(self._obstacle_yaw, dtype=np.float64),
+        }
+        return lidar, obstacles
 
     def _augmented_features(self):
         """fps_ratio / obs_age_ratio / episode_frame_count_ratio -- the
@@ -239,12 +344,29 @@ class AdaptiveFPSEnv(gymnasium.Env):
         # Reset ROS settings:
         # /odom, /clock and /goal_pose only advance while Gazebo is running
         util.unpause_simulation(node, 0)
+
+        # reset_on_success (eval-only, off by default -- see __init__):
+        # the previous episode ended in SUCCESS, which drl_gazebo.py's own
+        # task_succeed_callback() never resets for. Issue the same
+        # /reset_simulation call ourselves here, once, so this episode
+        # starts from the fixed reset pose exactly like a post-failure
+        # episode already does (drl_gazebo.py resets on failure before
+        # this reset() call even starts). `did_reset` -- not
+        # self._expect_reset -- drives the pose-verification/retry
+        # behavior below, since a hard reset happened either way.
+        did_reset = self._expect_reset
+        if self._reset_on_success and not self._expect_reset:
+            node.get_logger().info(
+                f"[episode {node.episode_index}] reset_on_success: issuing /reset_simulation after previous SUCCESS...")
+            _issue_reset_recovery(node)
+            did_reset = True
+
         goal_before = node.goal_baseline
 
         # Handshake: wait for /goal_pose, /clock, /odom to advance, then force a fresh /scan_gated forward.
         ready, status, attempt = False, "", 0
         for attempt in range(MAX_INIT_ATTEMPTS):
-            ready, status = wait_for_episode_ready(node, self._expect_reset, goal_before)
+            ready, status = wait_for_episode_ready(node, did_reset, goal_before)
             if ready:
                 break
             node.get_logger().warning(
@@ -254,20 +376,20 @@ class AdaptiveFPSEnv(gymnasium.Env):
             if attempt < MAX_INIT_ATTEMPTS - 1:
                 # Real recovery (not just re-verification) only when a
                 # hard reset was already the expected end-state for this
-                # slot (self._expect_reset, i.e. the previous episode
-                # ended in failure) -- issuing /reset_simulation when
-                # expect_reset is False would teleport the robot away
-                # from the "continue from where it succeeded" state the
-                # non-reset path is intentionally preserving, which would
-                # be a real behavior change, not a recovery.
-                if self._expect_reset:
+                # slot (did_reset, i.e. the previous episode ended in
+                # failure, or reset_on_success just reset it above) --
+                # issuing /reset_simulation otherwise would teleport the
+                # robot away from the "continue from where it succeeded"
+                # state the non-reset path is intentionally preserving,
+                # which would be a real behavior change, not a recovery.
+                if did_reset:
                     node.get_logger().warning(
                         f"[episode {node.episode_index}] initiating reset recovery...")
                     _issue_reset_recovery(node)
                     node.get_logger().warning(
                         f"[episode {node.episode_index}] reset recovery issued")
                 util.unpause_simulation(node, 0)
-                if self._expect_reset:
+                if did_reset:
                     node.get_logger().warning(
                         f"[episode {node.episode_index}] retrying episode-ready verification...")
 
@@ -281,7 +403,7 @@ class AdaptiveFPSEnv(gymnasium.Env):
 
         # Save current goal
         node.goal_baseline = node.goal_msg_count
-        retry_word = "recovery" if (attempt and self._expect_reset) else "retries"
+        retry_word = "recovery" if (attempt and did_reset) else "retries"
         node.get_logger().info(
             f"[episode {node.episode_index}] ready after {attempt} {retry_word}: "
             f"initial_fps={self.current_fps} obs_interval={self.obs_interval}")
@@ -310,6 +432,31 @@ class AdaptiveFPSEnv(gymnasium.Env):
         # already uses for episode_start_sim.
         self._episode_start_wall = time.perf_counter()
         self._episode_start_sim = stamp_to_sec(node.latest_odom.header.stamp) if node.latest_odom is not None else None
+
+        # Clear any previous episode's recording buffers and (re)arm
+        # _on_native_scan/_on_obstacle_odom -- both callbacks are
+        # permanent subscriptions (created once in __init__) that fire
+        # throughout the handshake too, so buffers must only start
+        # filling from this exact origin, matching record_episode.py's
+        # own "not self.current.ready: return" guard.
+        self._lidar_t_wall = []
+        self._lidar_t_sim = []
+        self._lidar_ranges = []
+        self._obstacle_t_wall = []
+        self._obstacle_t_sim = []
+        self._obstacle_frame_id = []
+        self._obstacle_x = []
+        self._obstacle_y = []
+        self._obstacle_yaw = []
+        self._recording_active = True
+
+        # Published exactly once per valid episode, matching
+        # eval_adaptive_fps.py's run_episode() -- purely informational
+        # (no subscriber affects control/reward/sensing), but required
+        # for tools/episode_recorder/record_episode.py's EpisodeRecorder
+        # (if run alongside this env) to anchor its own t_wall=0/t_sim=0
+        # origin correctly, exactly as it already does for that script.
+        node.ready_pub.publish(EmptyMsg())
 
         # Create reset observation and Info
         fps_ratio, obs_age_ratio, episode_frame_count_ratio = self._augmented_features()
@@ -504,6 +651,12 @@ class AdaptiveFPSEnv(gymnasium.Env):
             "x": x,
             "y": y,
             "yaw": yaw,
+            # Absolute goal coordinates (not just goal_distance_m) --
+            # reused directly from node.latest_goal_xy, already
+            # maintained by FixedSensingEvaluator._on_goal_pose (no new
+            # subscriber). None until the first /goal_pose is observed.
+            "goal_x": node.latest_goal_xy[0] if node.latest_goal_xy is not None else None,
+            "goal_y": node.latest_goal_xy[1] if node.latest_goal_xy is not None else None,
             "wall_time": wall_time,
             "sim_time": sim_time,
             "fps_ratio": fps_ratio,
