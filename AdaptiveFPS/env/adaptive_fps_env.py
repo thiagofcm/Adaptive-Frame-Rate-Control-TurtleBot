@@ -228,7 +228,7 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self.current_observation = None
         self._initial_goal_distance = None
         self._previous_goal_distance = None
-        self.frame_cost = 0.0025
+        self.frame_cost = 0.005
 
     def _on_native_scan(self, msg):
         self.native_scan_count += 1

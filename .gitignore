@@ -11,6 +11,7 @@ FixedFPS/eval/
 # Generated AdaptiveFPS experiments
 AdaptiveFPS/eval/
 AdaptiveFPS/runs/
+old_results/
 
 # Generated artifacts
 *.npz

@@ -39,7 +39,7 @@ GOAL_POSE_LIST = [[0.0, 2.0], [0.2, 2.0], [0.3, 2.0], [0.4, 2.0], [0.5, 2.0], [0
 
 # eval_adaptive_fps.py's STAGE9_RESET_X/STAGE9_RESET_Y -- the fixed pose
 # reset_simulation() (and reset_on_success) put the robot back at.
-ROBOT_START_X, ROBOT_START_Y = 0.0, 0.0
+ROBOT_START_X, ROBOT_START_Y = 2.5, 2.5
 
 
 def main():

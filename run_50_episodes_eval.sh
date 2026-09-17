@@ -15,11 +15,12 @@ EPISODES="${EPISODES:-50}"
 # ============================================================
 
 EVALS=(
-    "fps:0.2"
-    "fps:0.5"
-    "fps:1"
-    "fps:5"
+    #"model:AdaptiveFPS/runs/adaptive_fps_turtlebot_15-09-09-09-34/model.pt"
     "fps:10"
+    "fps:5"
+    "fps:1"
+    "fps:0.5"
+    "fps:0.2"
     # "model:AdaptiveFPS/runs/adaptive_fps_fc_0.0/model.pt",
     # "model:AdaptiveFPS/runs/adaptive_fps_fc_0.001/model.pt"
     # "model:AdaptiveFPS/runs/adaptive_fps_turtlebot_fc_0.003_ckpts/ckpts/timestep_20480_iterations_10/ckpt_20480_iterations_10.pt"

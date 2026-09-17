@@ -191,11 +191,14 @@ class Args:
 
 
 def make_env(max_episode_steps):
-    """AdaptiveFPSEnv takes no constructor arguments -- constructed
-    directly rather than via gym.make(), to avoid gym.make()'s default
-    wrapper stack around a real ROS/Gazebo side-effecting env."""
+    """Constructed directly rather than via gym.make(), to avoid
+    gym.make()'s default wrapper stack around a real ROS/Gazebo
+    side-effecting env. reset_on_success=True: every episode (success or
+    failure) resets the robot to the fixed reset pose, matching eval.py's
+    behavior -- explicit choice, changes the training curriculum (no more
+    "continue from where it succeeded")."""
     def thunk():
-        env = AdaptiveFPSEnv()
+        env = AdaptiveFPSEnv(reset_on_success=True)
         env = TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env

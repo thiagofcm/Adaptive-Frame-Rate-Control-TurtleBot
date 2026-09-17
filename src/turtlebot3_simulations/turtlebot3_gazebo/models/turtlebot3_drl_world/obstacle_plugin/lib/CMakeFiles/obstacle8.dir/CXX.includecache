@@ -6,7 +6,7 @@
 
 #IncludeRegexTransform: 
 
-/home/drlnav-test/drlnav/src/turtlebot3_simulations/turtlebot3_gazebo/models/turtlebot3_drl_world/obstacle_plugin/obstacle8.cc
+/home/turtlebot3_drlnav/src/turtlebot3_simulations/turtlebot3_gazebo/models/turtlebot3_drl_world/obstacle_plugin/obstacle8.cc
 ignition/math.hh
 -
 stdio.h
@@ -5923,12 +5923,6 @@ vector
 -
 ignition/math/Color.hh
 -
-ignition/math/Matrix4.hh
--
-ignition/math/Pose3.hh
--
-ignition/math/Vector3.hh
--
 gazebo/physics/Model.hh
 /usr/include/gazebo-11/gazebo/physics/gazebo/physics/Model.hh
 gazebo/common/Time.hh
@@ -7265,6 +7259,8 @@ gz/math/Matrix4.hh
 -
 gz/math/Matrix6.hh
 -
+gz/math/MecanumDriveOdometry.hh
+-
 gz/math/MovingWindowFilter.hh
 -
 gz/math/OrientedBox.hh
@@ -7628,6 +7624,18 @@ gz/math/config.hh
 gz/math/Helpers.hh
 -
 gz/math/Matrix3.hh
+-
+
+/usr/include/ignition/math6/gz/math/MecanumDriveOdometry.hh
+chrono
+-
+memory
+-
+gz/math/Angle.hh
+-
+gz/math/Export.hh
+-
+gz/math/config.hh
 -
 
 /usr/include/ignition/math6/gz/math/MovingWindowFilter.hh

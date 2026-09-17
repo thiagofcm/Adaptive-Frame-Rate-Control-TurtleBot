@@ -307,6 +307,7 @@ CMakeFiles/obstacle1.dir/obstacle1.cc.o: /usr/include/ignition/math6/gz/math/Mat
 CMakeFiles/obstacle1.dir/obstacle1.cc.o: /usr/include/ignition/math6/gz/math/Matrix3.hh
 CMakeFiles/obstacle1.dir/obstacle1.cc.o: /usr/include/ignition/math6/gz/math/Matrix4.hh
 CMakeFiles/obstacle1.dir/obstacle1.cc.o: /usr/include/ignition/math6/gz/math/Matrix6.hh
+CMakeFiles/obstacle1.dir/obstacle1.cc.o: /usr/include/ignition/math6/gz/math/MecanumDriveOdometry.hh
 CMakeFiles/obstacle1.dir/obstacle1.cc.o: /usr/include/ignition/math6/gz/math/MovingWindowFilter.hh
 CMakeFiles/obstacle1.dir/obstacle1.cc.o: /usr/include/ignition/math6/gz/math/OrientedBox.hh
 CMakeFiles/obstacle1.dir/obstacle1.cc.o: /usr/include/ignition/math6/gz/math/PID.hh
