@@ -13,6 +13,8 @@
 # Results go to $EVAL_ROOT/adaptive_<run dir>_<checkpoint name>/, next to the Stage 13 fixed-rate
 # baselines so $EVAL_ROOT/summary.csv compares them. Override per run, e.g.
 #   EVAL_ROOT=/home/turtlebot3_drlnav/AdaptiveFPS/eval_stage13_other ./run_adaptive_fps_eval_stage13.sh <model.pt> 3
+# Frame cost / budget (defaults 0.005 / 450; BUDGET must match the checkpoint's training budget), e.g.
+#   FRAME_COST=0.035 BUDGET=450 ./run_adaptive_fps_eval_stage13.sh <model.pt> 3
 
 set -e
 
@@ -26,6 +28,8 @@ fi
 MODEL="$1"
 EPISODES="${2:-3}"
 EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval_stage13_full}"
+FRAME_COST="${FRAME_COST:-0.005}"
+BUDGET="${BUDGET:-450}"
 
 case "$MODEL" in
     /*) MODEL_PATH="$MODEL" ;;
@@ -62,6 +66,8 @@ tmux send-keys -t "$SESSION:evaluator" \
   --model $MODEL_PATH \
   --episodes $EPISODES \
   --eval-root $EVAL_ROOT \
+  --frame-cost $FRAME_COST \
+  --budget $BUDGET \
   --diagnose-probs" C-m
 
 

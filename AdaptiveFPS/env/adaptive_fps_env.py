@@ -39,7 +39,7 @@ from AdaptiveFPS.env.gazebo_bridge import (
     stamp_to_sec,
     quaternion_to_yaw,
 )
-from AdaptiveFPS.env.adaptive_obs import ADAPTIVE_FRAME_BUDGET, ADAPTIVE_OBS_DIM  # noqa: E402
+from AdaptiveFPS.env.adaptive_obs import ADAPTIVE_FRAME_BUDGET, ADAPTIVE_FRAME_COST, ADAPTIVE_OBS_DIM  # noqa: E402
 
 PPO_RATE_HZ = 10.0
 PPO_DT = 1.0 / PPO_RATE_HZ
@@ -56,8 +56,15 @@ R_TIMEOUT = -15.0
 
 
 class AdaptiveFPSEnv(gymnasium.Env):
-    def __init__(self):
+    def __init__(self, frame_cost=ADAPTIVE_FRAME_COST, budget=ADAPTIVE_FRAME_BUDGET):
+        """frame_cost: reward penalty per PPO step that consumes a fresh scan.
+        budget: frame_ratio denominator (episode_scan_count / budget) -- part of the policy observation.
+        Both are experiment settings owned by the trainer/evaluator CLI; defaults are the legacy values."""
         super().__init__()
+        if not frame_cost >= 0.0:
+            raise ValueError(f"frame_cost must be >= 0, got {frame_cost}")
+        if not budget > 0:
+            raise ValueError(f"budget must be > 0, got {budget}")
 
         if not rclpy.ok():
             rclpy.init()
@@ -107,9 +114,9 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self.current_observation = None
         self._initial_goal_distance = None
         self._previous_goal_distance = None
-        self.frame_cost = 0.005
+        self.frame_cost = frame_cost
         self._max_obs_interval = PPO_RATE_HZ / (min(self.fps_choices))
-        self.budget = 450
+        self.budget = budget
 
     def _load_navigation_model(self):
         """Load the frozen TD3 navigation controller;

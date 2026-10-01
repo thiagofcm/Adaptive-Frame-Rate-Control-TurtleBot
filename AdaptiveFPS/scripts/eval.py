@@ -20,9 +20,13 @@ AdaptiveFPSEnv or train_adaptive_fps_ppo.py.
 Gazebo, environment_gated.py, and gazebo_goals must already be running
 (launched separately by the bash/tmux script) before this is started.
 
+--frame-cost and --budget configure the env (defaults 0.005 / 450, the legacy values). The budget scales
+the frame_ratio policy input, so a --model checkpoint must have been trained with the same budget. The
+frame cost only affects the reported reward; the checkpoint's training frame cost is recorded alongside.
+
 Usage:
-    python3 AdaptiveFPS/scripts/evaluate_fixed_policy_env.py --fps 5 --episodes 20
-    python3 AdaptiveFPS/scripts/evaluate_fixed_policy_env.py --model AdaptiveFPS/runs/<run>/model.pt --episodes 20
+    python3 AdaptiveFPS/scripts/eval.py --fps 5 --episodes 20 --frame-cost 0.005 --budget 450
+    python3 AdaptiveFPS/scripts/eval.py --model AdaptiveFPS/runs/<run>/model.pt --episodes 20
 """
 import argparse
 import atexit
@@ -42,7 +46,7 @@ from torch.distributions.categorical import Categorical
 sys.path.insert(0, os.environ["DRLNAV_BASE_PATH"])
 from AdaptiveFPS.env.adaptive_fps_env import AdaptiveFPSEnv  # noqa: E402
 from AdaptiveFPS.env.adaptive_obs import (  # noqa: E402
-    ADAPTIVE_FRAME_BUDGET, ADAPTIVE_OBS_DIM, ADAPTIVE_OBS_LAYOUT, check_adaptive_checkpoint)
+    ADAPTIVE_FRAME_BUDGET, ADAPTIVE_FRAME_COST, ADAPTIVE_OBS_DIM, ADAPTIVE_OBS_LAYOUT, check_adaptive_checkpoint)
 
 sys.path.insert(0, os.path.join(os.environ["DRLNAV_BASE_PATH"], "tools", "episode_recorder"))
 from record_episode import load_world_geometry  # noqa: E402  (reused, not re-derived --
@@ -443,6 +447,8 @@ def build_metadata(env, args, action_index, episode_data, model_path=None, lstm_
             metadata["checkpoint_env_id"] = checkpoint_summary["env_id"]
             metadata["checkpoint_scene"] = checkpoint_summary["scene"]
             metadata["checkpoint_budget"] = checkpoint_summary["budget"]
+            metadata["checkpoint_budget_stored"] = checkpoint_summary["budget_stored"]
+            metadata["checkpoint_frame_cost"] = checkpoint_summary["frame_cost"]
     return metadata
 
 
@@ -589,18 +595,23 @@ def main():
                          help="directory that receives the fixed_*Hz/ or adaptive_*/ run folders and "
                               "summary.csv (default: $DRLNAV_BASE_PATH/AdaptiveFPS/eval). Use a separate "
                               "root per stage so results from different worlds never mix.")
+    parser.add_argument("--frame-cost", type=float, default=ADAPTIVE_FRAME_COST,
+                         help="reward penalty per PPO step that consumes a fresh scan (default: %(default)s)")
+    parser.add_argument("--budget", type=int, default=ADAPTIVE_FRAME_BUDGET,
+                         help="frame budget, frame_ratio = episode_scan_count / budget; must match a --model "
+                              "checkpoint's training budget (default: %(default)s)")
     args = parser.parse_args()
 
     # Every episode starts from the same reset pose regardless of the previous outcome
     # (AdaptiveFPSEnv owns one /reset_simulation per episode; gazebo_goals runs with external_reset:=true).
-    env = AdaptiveFPSEnv()
+    env = AdaptiveFPSEnv(frame_cost=args.frame_cost, budget=args.budget)
     try:
         # The sensing policy's observation is the canonical 43-D one (AdaptiveFPS/env/adaptive_obs.py);
         # refuse to run if the environment was edited to produce anything else.
         obs_dim = int(np.prod(env.observation_space.shape))
-        if obs_dim != ADAPTIVE_OBS_DIM or env.budget != ADAPTIVE_FRAME_BUDGET:
-            raise SystemExit(f"AdaptiveFPSEnv provides a {obs_dim}-D observation with frame budget {env.budget}; "
-                             f"expected {ADAPTIVE_OBS_DIM}-D with budget {ADAPTIVE_FRAME_BUDGET}")
+        if obs_dim != ADAPTIVE_OBS_DIM:
+            raise SystemExit(f"AdaptiveFPSEnv provides a {obs_dim}-D observation; expected {ADAPTIVE_OBS_DIM}-D")
+        print(f"Experiment settings: frame_cost={env.frame_cost} budget={env.budget}")
         eval_root = (os.path.abspath(args.eval_root) if args.eval_root is not None
                      else os.path.join(os.environ["DRLNAV_BASE_PATH"], "AdaptiveFPS", "eval"))
 
@@ -645,7 +656,9 @@ def main():
             print("AdaptiveFPSEnv adaptive (recurrent PPO) evaluation")
             print(f"  loaded model:     {args.model}")
             print(f"  obs_dim:          {obs_dim} ({ADAPTIVE_OBS_LAYOUT})")
-            print(f"  frame budget:     {env.budget} (checkpoint: {checkpoint_summary['budget']})")
+            print(f"  frame budget:     {env.budget} (checkpoint: {checkpoint_summary['budget']}"
+                  f"{'' if checkpoint_summary['budget_stored'] else ', not stored -> legacy default'})")
+            print(f"  frame cost:       {env.frame_cost} (checkpoint trained with: {checkpoint_summary['frame_cost']})")
             print(f"  trained on:       env_id={checkpoint_summary['env_id']} scene={checkpoint_summary['scene']}")
             print(f"  n_actions:        {n_actions} (fps_choices={env.fps_choices})")
             print(f"  lstm_hidden_size: {lstm_hidden_size}")
