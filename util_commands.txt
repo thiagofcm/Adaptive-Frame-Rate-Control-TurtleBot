@@ -13,6 +13,11 @@ source install/setup.bash
 colcon build --packages-select turtlebot3_drl
 
 
+colcon build --packages-select turtlebot3_drl       # settings.py + drl_gazebo.py
+colcon build --packages-select turtlebot3_gazebo    # burger.model
+source install/setup.bash
+
+
 obstacle model	spawn pose	plugin (movement)
 turtlebot3_drl_obstacle1	(2, 2)	libobstacle7.so
 turtlebot3_drl_obstacle2	(-2, -2)	libobstacle8.so

@@ -1,180 +1,74 @@
-#!/usr/bin/env python3
-"""AdaptiveFPSEnv - Gymnasium environment for learning the adaptive LiDAR
-sensing-frequency policy on the TurtleBot3 Stage 9 ROS2/Gazebo stack, with
-the frozen Stage 9 TD3 navigation actor unchanged underneath it.
-
-Sibling to FixedFPS/ (the validated fixed-interval reference), not a
-dependent of it. This is a behavior-preserving EXTRACTION of the already
-validated sensing/synchronization mechanics from
-AdaptiveFPS/scripts/eval_adaptive_fps.py -- that file is imported from,
-never modified, never duplicated logic-for-logic. Naming and step()
-structure deliberately mirror the F1TENTH adaptive_fps_env.py reference
-wherever the underlying concepts are equivalent (see per-method comments
-for the TurtleBot-specific correspondences, since ROS/Gazebo asynchrony
-means the mechanism can't be identical).
-
-Reused, unmodified, from eval_adaptive_fps.py:
-    - FixedSensingEvaluator: the ROS2 Node class itself (scan gate,
-      step_comm/goal_comm/pause/unpause clients, goal/odom/clock tracking,
-      frozen TD3 model loading -- all of it, instantiated as-is).
-    - wait_for_episode_ready() / _safe_stop(): the full validated
-      episode-ready handshake (new /goal_pose, fresh /clock, fresh /odom
-      with reset-pose verification when appropriate, forced-fresh
-      /scan_gated), bounded-retry, "don't proceed on timeout" semantics.
-    - MAX_INIT_ATTEMPTS, NATIVE_SCAN_HZ.
-Reused, unmodified, from common/utilities.py:
-    - step(), init_episode(), pause_simulation(), unpause_simulation().
-Reused, unmodified:
-    - AdaptiveFPS/rewards/adaptive_fps_reward.py's get_adaptive_reward().
-
-What's genuinely new: reset()/step() drive the control loop directly
-(instead of eval_adaptive_fps.py's own run_episode()), and the adaptive
-action dynamically retargets the existing gate's `node.k` (exposed here
-as `self.obs_interval`) after each consumed frame, rather than
-eval_adaptive_fps.py's convention of a single `k` fixed for an entire
-episode from the CLI --fps argument.
-
-Not included in this first version (deliberately, per spec): PPO/LSTM,
-augmented/temporal observation features (fps_ratio, obs_age_ratio,
-frame_ratio), frame-cost reward shaping, success/failure/budget reward
-terms, and any evaluation/export logic (episodes.csv/steps.csv/etc. stay
-the evaluation script's responsibility, added in a later task).
-"""
 import copy
+import math
 import os
 import sys
 import time
-
+import torch
+import math 
 import numpy as np
 import gymnasium
 from gymnasium import spaces
 
 import rclpy
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
+from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Empty as EmptyMsg
+from std_srvs.srv import Empty
 
 from turtlebot3_drl.common import utilities as util
-from turtlebot3_drl.common.settings import SUCCESS, EPISODE_TIMEOUT_SECONDS
+from turtlebot3_drl.common.storagemanager import StorageManager
+from turtlebot3_drl.common.settings import (
+    SUCCESS, COLLISION_WALL, COLLISION_OBSTACLE, TIMEOUT, TUMBLE, ENABLE_STACKING)
+from turtlebot3_drl.drl_agent.td3 import TD3
 from turtlebot3_drl.drl_environment.drl_environment import NUM_SCAN_SAMPLES, MAX_GOAL_DISTANCE
 
 BASE_PATH = os.environ["DRLNAV_BASE_PATH"]
-sys.path.insert(0, os.path.join(BASE_PATH, "AdaptiveFPS", "scripts"))
-from eval_adaptive_fps import (  # noqa: E402  (path must be set up first)
-    FixedSensingEvaluator,
-    wait_for_episode_ready,
-    _safe_stop,
-    _issue_reset_recovery,
+sys.path.insert(0, BASE_PATH)
+
+from AdaptiveFPS.env.gazebo_bridge import (
+    GazeboSensingBridge,
+    EPISODE_READY_TIMEOUT,
+    HEARTBEAT_PERIOD_S,
+    STAGE9_RESET_X,
+    STAGE9_RESET_Y,
+    RESET_POSITION_TOLERANCE_M,
+    RESET_VELOCITY_TOLERANCE_MPS,
     MAX_INIT_ATTEMPTS,
-    NATIVE_SCAN_HZ,
     stamp_to_sec,
     quaternion_to_yaw,
 )
+from AdaptiveFPS.env.adaptive_obs import ADAPTIVE_FRAME_BUDGET, ADAPTIVE_OBS_DIM  # noqa: E402
 
-sys.path.insert(0, BASE_PATH)
-from AdaptiveFPS.rewards.adaptive_fps_reward import get_adaptive_reward  # noqa: E402
-
-# From AdaptiveFPS/action_space.txt -- reused, not re-derived.
-
-# Fixed PPO sampling rate: one AdaptiveFPSEnv.step() call represents
-# exactly PPO_DT seconds of Gazebo simulation time (measured via /clock,
-# node.latest_sim_time -- FixedSensingEvaluator._on_clock, reused
-# unmodified), decoupling PPO experience collection from the unthrottled
-# DrlStep/TD3 control-RPC rate (~500-1500 Hz, CPU/DDS-dependent). 10 Hz is
-# the fastest available sensing choice (fps_choices below), so every
-# obs_interval is an exact multiple of one PPO step:
-# 10Hz->1, 5Hz->2, 1Hz->10, 0.5Hz->20, 0.2Hz->50 PPO steps.
 PPO_RATE_HZ = 10.0
 PPO_DT = 1.0 / PPO_RATE_HZ
 
+# Frozen TD3 navigation controller checkpoint (moved from gazebo_bridge.py).
+MODEL_RUN_NAME    = "examples/td3_0_stage9"
+LOAD_EPISODE      = 7400
+ALGORITHM         = "td3"
+
+# Reward Constants
+R_SUCCESS = 15.0
+R_COLLISION = -15.0
+R_TIMEOUT = -15.0
+
 
 class AdaptiveFPSEnv(gymnasium.Env):
-    """One Gym step() == PPO_DT (0.1s) of Gazebo simulation time -- NOT one
-    navigation/control transition and NOT one full sensing interval.
-    Internally, step() runs the same control loop (one step_comm RPC to
-    DRLEnvironment per control tick) as many times as needed to advance
-    PPO_DT seconds of /clock, or until the episode terminates, whichever
-    comes first; the frozen TD3 controller and its per-tick RPC rate are
-    completely unchanged. Native /scan arrivals are counted independently
-    of the control loop (see FixedSensingEvaluator._on_real_scan, reused
-    unmodified), since the control loop runs at ~hundreds-to-thousands of
-    Hz while /scan is fixed at NATIVE_SCAN_HZ (~50 Hz) -- counting control
-    steps would not measure the sensing interval correctly. F1TENTH's
-    `steps_since_last_obs` counts control steps because its control
-    frequency IS its sensing reference rate; the TurtleBot equivalent is
-    native /scan arrivals (`scans_since_last_obs`, i.e.
-    `node.scans_since_forward`), never control transitions.
-
-    Observation (frozen TD3 navigation input, section 1 of step()): the
-    raw 44-D state vector DRLEnvironment's own get_state() produces --
-    unaugmented, unchanged. Observation (PPO-facing, returned by
-    reset()/step()): that same 44-D vector plus 3 sensing-state features
-    appended at the end (fps_ratio, obs_age_ratio,
-    episode_frame_count_ratio -- see _augmented_features()), 47-D total.
-    The frozen TD3 actor never sees the augmented 3 dims.
-
-    TurtleBot equivalent of F1TENTH's self.last_sampled_scan: there is no
-    separate held-scan object here. The fresh/held LiDAR observation is
-    already cached inside DRLEnvironment itself (self.scan_ranges),
-    updated only when /scan_gated delivers a newly forwarded native scan
-    -- self.current_observation's LiDAR portion already *is* that cache's
-    current value, fresh or stale, exactly as drl_environment.py's own
-    unmodified sample-and-hold get_state() produces it. No redundant
-    variable is introduced just to mirror the name.
-
-    Reward: get_adaptive_reward()'s normalized goal-progress signal alone
-    (see adaptive_fps_reward.py). No frame-cost, success/failure, or
-    budget terms are added here -- deferred to a later task, per spec.
-    The raw navigation reward is still exposed in `info["nav_reward"]`
-    for diagnostics.
-
-    Threading/locking: none used, none needed. Every ROS callback here
-    (the gate, goal/odom/clock tracking, this env's own native-scan
-    counter) only ever runs synchronously inside `rclpy.spin_once()`
-    calls made from this same Python thread (inside util.step() and the
-    handshake's _spin_until()) -- exactly like the rest of this codebase.
-    There is no background executor thread and therefore no concurrent
-    access to any shared counter.
-    """
-
-    def __init__(self, reset_on_success=False):
+    def __init__(self):
         super().__init__()
-
-        # Off by default -- training relies on a SUCCESS leaving the
-        # robot wherever it stopped ("continue from where it succeeded").
-        # eval.py opts in (reset_on_success=True) so every episode starts
-        # from the same fixed reset pose regardless of outcome, for
-        # cross-policy comparability. See reset() for where this is used.
-        self._reset_on_success = reset_on_success
 
         if not rclpy.ok():
             rclpy.init()
 
-        self.node = FixedSensingEvaluator()
+        self.node = GazeboSensingBridge()
+        self.navigation_model = self._load_navigation_model()
         self.native_scan_count = 0
         self.node.create_subscription(LaserScan, "scan", self._on_native_scan, qos_profile_sensor_data)
-        # Recording only (never read by control/reward/sensing/PPO logic
-        # below) -- same "obstacle/odom" topic DRLEnvironment itself
-        # already subscribes to (drl_environment.py's
-        # obstacle_odom_callback, for the dynamic-vs-wall collision
-        # split), and the same topic tools/episode_recorder/
-        # record_episode.py's EpisodeRecorder already records from, for
-        # the FixedFPS study -- reused here as the source for this env's
-        # own optional per-episode obstacles.npz export (see
-        # get_recording_arrays()/_on_obstacle_odom below).
-        self.node.create_subscription(
-            Odometry, "obstacle/odom", self._on_obstacle_odom, QoSProfile(depth=10))
+        self.node.create_subscription(Odometry, "obstacle/odom", self._on_obstacle_odom, QoSProfile(depth=10))
 
-        # Per-episode recording buffers (lidar + obstacle positions over
-        # time) -- populated passively by _on_native_scan/_on_obstacle_odom
-        # whenever a recording episode is active (see reset()), read out
-        # once per episode by get_recording_arrays(). Never fed back into
-        # the observation/reward/control path -- purely for the
-        # evaluator's optional lidar.npz/obstacles.npz export, mirroring
-        # record_episode.py's Episode.add_scan()/add_obstacle() schema so
-        # existing tooling (tools/episode_recorder/make_video_fps_v2.py)
-        # reads either source unmodified.
+        # Per-episode recording buffers (lidar + obstacle positions over time)
         self._recording_active = False
         self._lidar_t_wall = []
         self._lidar_t_sim = []
@@ -190,46 +84,55 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self.fps_choices = [0.2, 0.5, 1.0, 5.0, 10.0]
         self.action_space = spaces.Discrete(len(self.fps_choices))
 
-        # Fixed normalization denominators for the augmented sensing-state
-        # features (fps_ratio/obs_age_ratio/episode_frame_count_ratio,
-        # see _augmented_features()) -- computed once from fps_choices/
-        # NATIVE_SCAN_HZ/EPISODE_TIMEOUT_SECONDS, mirroring the F1TENTH
-        # reference's own fixed-denominator convention
-        # (self.max_obs_interval = int(self.control_frequency /
-        # min(self.fps_choices)); episode_frame_count normalized by
-        # self.budget), adapted to TurtleBot's native-scan-count gate
-        # instead of control-step counting, and to the fact this env has
-        # no "budget" constructor concept -- the frame-count bound is
-        # instead derived from the episode timeout and the fastest
-        # available sensing rate.
-        self._min_obs_interval = max(1, round(NATIVE_SCAN_HZ / max(self.fps_choices)))  # fastest possible k (10 Hz)
-        self._max_obs_interval = max(1, round(NATIVE_SCAN_HZ / min(self.fps_choices)))  # slowest possible k (0.2 Hz)
-        self._max_episode_frame_count = max(
-            1, round((EPISODE_TIMEOUT_SECONDS * NATIVE_SCAN_HZ) / self._min_obs_interval))
+        # Observation Space definition: canonical 43-D sensing observation
+        # (retained 40-beam scan + fps_ratio, obs_age_ratio, frame_ratio),
+        # every entry in [0, 1].
+        self.observation_space = spaces.Box(
+            low=np.zeros(ADAPTIVE_OBS_DIM, dtype=np.float32),
+            high=np.ones(ADAPTIVE_OBS_DIM, dtype=np.float32),
+            dtype=np.float32)
 
-        # Observation Space definition: original 44-D navigation state +
-        # 3 sensing-state features (fps_ratio, obs_age_ratio,
-        # episode_frame_count_ratio), all three already clipped to [0, 1]
-        # by _augmented_features() below.
-        low = np.array([0.0] * NUM_SCAN_SAMPLES + [0.0, -1.0, -1.0, -1.0] + [0.0, 0.0, 0.0], dtype=np.float32)
-        high = np.array([1.0] * NUM_SCAN_SAMPLES + [1.0, 1.0, 1.0, 1.0] + [1.0, 1.0, 1.0], dtype=np.float32)
-        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
-
-        # flag for reseting GAZEBO env
-        self._expect_reset = True
 
         # Adaptive FPS Variables:
         self.world_step_count = 0
         self.prev_navigation_action = [0.0, 0.0]
-        self.last_gated_scan_count = 0
-        self.episode_frame_count = 0
+        self.steps_since_last_obs = 0
+        self.fps_ratio = None                  # last values inserted into the 43-D PPO observation
+        self.obs_age_ratio = None              # (set by get_augmented_obs; None until the first reset)
+        self.episode_scan_count_ratio = None
+        self.prev_gated_scan_count = 0
+        self.episode_scan_count = 0
         self.current_fps = None
         self.obs_interval = None
         self.current_observation = None
         self._initial_goal_distance = None
         self._previous_goal_distance = None
         self.frame_cost = 0.005
+        self._max_obs_interval = PPO_RATE_HZ / (min(self.fps_choices))
+        self.budget = 450
 
+    def _load_navigation_model(self):
+        """Load the frozen TD3 navigation controller;
+        it consumes the unchanged 44-D navigation state. Returns the TD3 agent."""
+        # --- load the frozen actor exactly as drl_agent.py does ---
+        device = torch.device("cpu")
+        sim_speed = util.get_simulation_speed(util.stage)
+        sm = StorageManager(ALGORITHM, MODEL_RUN_NAME, LOAD_EPISODE, device, util.stage)
+        model = sm.load_model()
+        model.device = device
+        sm.load_weights(model.networks)
+
+        assert isinstance(model, TD3), f"expected a TD3 model, got {type(model)}"
+        assert model.state_size == NUM_SCAN_SAMPLES + 4, \
+            f"state_size mismatch: model={model.state_size} env={NUM_SCAN_SAMPLES + 4}"
+        assert not ENABLE_STACKING, "AdaptiveFPSEnv does not support ENABLE_STACKING"
+
+        self.node.get_logger().info(
+            f"loaded {MODEL_RUN_NAME} episode {LOAD_EPISODE}: state_size={model.state_size} "
+            f"step_time={model.step_time} sim_speed={sim_speed} device={device}")
+        return model
+
+    # Recording-related callbacks and utilities
     def _on_native_scan(self, msg):
         self.native_scan_count += 1
         if self._recording_active:
@@ -298,147 +201,214 @@ class AdaptiveFPSEnv(gymnasium.Env):
         }
         return lidar, obstacles
 
-    def _augmented_features(self):
-        """fps_ratio / obs_age_ratio / episode_frame_count_ratio -- the
-        three sensing-state features appended to the PPO-facing
-        observation (never to the frozen TD3 navigation observation).
-        Reuses only existing, already-validated state -- no new counters,
-        no changes to the gate or to frame_consumed semantics:
-
-        - fps_ratio: the currently ACTIVE sensing rate (self.current_fps,
-          not a just-requested action that hasn't taken effect yet)
-          normalized by the fastest available choice.
-        - obs_age_ratio: TurtleBot equivalent of F1TENTH's
-          steps_since_last_obs / max_obs_interval, substituting native
-          /scan arrivals for control steps (see class docstring) --
-          node.scans_since_forward is the exact same counter the
-          validated gate (_on_real_scan, unmodified) already maintains:
-          incremented on every native scan, reset to 0 the instant a
-          forward happens. Reading it here is purely observational.
-          Normalized by the fixed _max_obs_interval (the slowest
-          available rate's interval), matching F1TENTH's fixed-
-          denominator convention, then clipped to [0, 1].
-        - episode_frame_count_ratio: self.episode_frame_count (already
-          includes the initial reset observation, semantics unchanged)
-          normalized by the derived _max_episode_frame_count and clipped
-          to [0, 1].
+    def get_augmented_obs(self, nav_observation):
+        """Canonical 43-D PPO observation: the retained LiDAR scan (first NUM_SCAN_SAMPLES dims of the
+        44-D TD3 state, i.e. the held /scan_gated scan) followed by fps_ratio, obs_age_ratio and
+        episode_scan_count_ratio. The three features are stored on the env (self.fps_ratio, ...) so
+        info reports exactly the values placed in the observation.
+        - fps_ratio: active sensing rate / PPO_RATE_HZ (10)
+        - obs_age_ratio: PPO steps since the last fresh observation / _max_obs_interval, clipped to [0, 1]
+        - episode_scan_count_ratio: episode_scan_count / budget, clipped to [0, 1]
         """
+        self.fps_ratio = self.current_fps / PPO_RATE_HZ
+        self.obs_age_ratio = float(np.clip(self.steps_since_last_obs / self._max_obs_interval, 0.0, 1.0))
+        self.episode_scan_count_ratio = float(np.clip(self.episode_scan_count / self.budget, 0.0, 1.0))
+        return np.concatenate(
+            [np.asarray(nav_observation[:NUM_SCAN_SAMPLES], dtype=np.float32),
+             [self.fps_ratio, self.obs_age_ratio, self.episode_scan_count_ratio]]
+        ).astype(np.float32)
+
+    def _spin_until(self, condition, timeout, label=None):
+        """Spin this node's own callbacks until condition() is True or timeout
+        elapses. Returns condition()'s final value -- never claims success on a
+        timeout that condition() itself would reject.
+
+        If `label` is given, logs an INFO heartbeat roughly every
+        HEARTBEAT_PERIOD_S seconds while waiting, purely so a real (possibly
+        long) wait is visibly distinguishable from a genuine hang, and so a
+        stuck run shows exactly which condition it's stuck on. Purely
+        diagnostic -- does not affect timing or the return value."""
         node = self.node
-        fps_ratio = self.current_fps / max(self.fps_choices)
-        obs_age_ratio = float(np.clip(node.scans_since_forward / self._max_obs_interval, 0.0, 1.0))
-        episode_frame_count_ratio = float(np.clip(self.episode_frame_count / self._max_episode_frame_count, 0.0, 1.0))
-        return fps_ratio, obs_age_ratio, episode_frame_count_ratio
+        start = time.monotonic()
+        deadline = start + timeout
+        next_heartbeat = start + HEARTBEAT_PERIOD_S
+        while time.monotonic() < deadline:
+            if condition():
+                return True
+            now = time.monotonic()
+            if label is not None and now >= next_heartbeat:
+                node.get_logger().info(
+                    f"[episode {node.episode_index}] still waiting for {label} "
+                    f"({now - start:.0f}s/{timeout:.0f}s)")
+                next_heartbeat = now + HEARTBEAT_PERIOD_S
+            rclpy.spin_once(node, timeout_sec=0.05)
+        return condition()
+
+    def _at_reset_pose(self):
+        node = self.node
+        if node.latest_odom is None:
+            return False
+        p = node.latest_odom.pose.pose.position
+        t = node.latest_odom.twist.twist
+        pos_ok = math.hypot(p.x - STAGE9_RESET_X, p.y - STAGE9_RESET_Y) <= RESET_POSITION_TOLERANCE_M
+        vel_ok = abs(t.linear.x) <= RESET_VELOCITY_TOLERANCE_MPS and abs(t.angular.z) <= RESET_VELOCITY_TOLERANCE_MPS
+        return pos_ok and vel_ok
+
+    def _safe_stop(self):
+        """Best-effort: zero the robot's commanded velocity and pause physics
+        before a retry, so a stale command doesn't keep driving the robot while
+        we wait, and so the next attempt starts from a known (paused) state."""
+        node = self.node
+        node.cmd_vel_pub.publish(Twist())
+        util.pause_simulation(node, 0)
+
+    def _issue_reset_recovery(self):
+        """Issue Gazebo's /reset_simulation. Used by reset() for the single
+        episode-boundary reset of every episode (this env owns all resets;
+        gazebo_goals runs with external_reset:=true), and again for recovery
+        after a failed handshake attempt -- as opposed to _safe_stop() (which
+        only pauses/zeros velocity and changes no physical state). Teleports
+        every model -- including the robot -- back to its world-file insertion
+        pose and resets sim time to 0.
+
+        Deliberately does NOT touch goal state: the goal marker's own Gazebo
+        insertion pose is wherever it was last spawned for the CURRENT
+        episode's intended goal, so this call cannot move or regenerate it.
+        Nothing here calls task_fail/task_succeed, and goal_baseline/
+        goal_msg_count/episode_index are all untouched -- this is a pure
+        physics-state reset.
+
+        Blocks (call_async + spin-until-future.done(), same idiom as
+        utilities.py's pause_simulation/unpause_simulation) until Gazebo has
+        ACKNOWLEDGED the request -- this confirms the request was issued,
+        NOT that the reset has already propagated to /odom. The caller must
+        run _wait_for_episode_ready() afterwards and rely on ITS existing
+        fresh-/odom-at-reset-pose check for that -- same
+        as any other handshake attempt, never assumed complete from this
+        call alone."""
+        node = self.node
+        req = Empty.Request()
+        while not node.reset_simulation_client.wait_for_service(timeout_sec=1.0):
+            node.get_logger().info("reset_simulation service not available, waiting again...")
+        future = node.reset_simulation_client.call_async(req)
+        while rclpy.ok():
+            rclpy.spin_once(node)
+            if future.done():
+                return
+
+    def _wait_for_episode_ready(self, goal_before):
+        """One handshake ATTEMPT for the current episode slot. `goal_before` is
+        fixed for the whole slot (captured once in run_episode) -- retrying this
+        function does NOT wait for another new /goal_pose, since the goal does
+        not change again until the next episode; only the clock/odom/scan
+        freshness checks are re-run per attempt. Confirms, in order:
+          1. a /goal_pose newer than goal_before has already been observed;
+          2. a /clock tick newer than when this attempt started (physics is
+             actually advancing -- Gazebo starts paused and stays paused across
+             every boundary until unpause_simulation() runs);
+          3. /odom newer than this attempt's start, at the confirmed reset
+             pose with near-zero twist (every episode starts from a reset);
+          4. one forced-fresh /scan_gated forward, so the episode never starts
+             on a scan cached from the previous one.
+        Returns (ready, status). A timeout at any stage returns (False, reason)
+        and never treats stale/incomplete data as readiness."""
+        node = self.node
+        if not self._spin_until(lambda: node.goal_msg_count > goal_before, EPISODE_READY_TIMEOUT,
+                            label="a new /goal_pose"):
+            return False, "timeout waiting for a new /goal_pose"
+
+        clock_before = node.clock_msg_count
+        if not self._spin_until(lambda: node.clock_msg_count > clock_before, EPISODE_READY_TIMEOUT,
+                            label="a fresh /clock tick"):
+            return False, "timeout waiting for a fresh /clock tick (is Gazebo unpaused?)"
+
+        odom_before = node.odom_msg_count
+        if not self._spin_until(
+            lambda: node.odom_msg_count > odom_before and self._at_reset_pose(),
+            EPISODE_READY_TIMEOUT,
+            label="/odom at the confirmed reset pose",
+        ):
+            odom = node.latest_odom
+            detail = "no /odom received" if odom is None else (
+                f"x={odom.pose.pose.position.x:.3f} y={odom.pose.pose.position.y:.3f} "
+                f"vlin={odom.twist.twist.linear.x:.3f} vang={odom.twist.twist.angular.z:.3f}")
+            return False, f"timeout waiting for /odom at confirmed reset pose ({detail})"
+
+        node.request_fresh_scan()
+        scan_before = node.gated_scan_count
+        if not self._spin_until(lambda: node.gated_scan_count > scan_before, EPISODE_READY_TIMEOUT,
+                            label="a forced-fresh /scan_gated forward"):
+            return False, "timeout waiting for a forced-fresh /scan_gated"
+
+        return True, "ready"
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         node = self.node
         node.episode_index += 1
-
-        # Reset Adaptive FPS variables:
-        self.current_fps = max(self.fps_choices)
-        self.obs_interval = max(1, round(NATIVE_SCAN_HZ / self.current_fps))
-        node.k = self.obs_interval #interval for the gate mechanism
-        node.scans_since_forward = 0 #?
-        node.gated_scan_count = 0 # Current not-skipped scans (How many were actually seen)
-
-        # Reset ROS settings:
-        # /odom, /clock and /goal_pose only advance while Gazebo is running
-        util.unpause_simulation(node, 0)
-
-        # reset_on_success (eval-only, off by default -- see __init__):
-        # the previous episode ended in SUCCESS, which drl_gazebo.py's own
-        # task_succeed_callback() never resets for. Issue the same
-        # /reset_simulation call ourselves here, once, so this episode
-        # starts from the fixed reset pose exactly like a post-failure
-        # episode already does (drl_gazebo.py resets on failure before
-        # this reset() call even starts). `did_reset` -- not
-        # self._expect_reset -- drives the pose-verification/retry
-        # behavior below, since a hard reset happened either way.
-        did_reset = self._expect_reset
-        if self._reset_on_success and not self._expect_reset:
-            node.get_logger().info(
-                f"[episode {node.episode_index}] reset_on_success: issuing /reset_simulation after previous SUCCESS...")
-            _issue_reset_recovery(node)
-            did_reset = True
-
         goal_before = node.goal_baseline
 
-        # Handshake: wait for /goal_pose, /clock, /odom to advance, then force a fresh /scan_gated forward.
+        # Reset Simulation owned by the env.
+        # Gazebo is already paused at the episode boundary.
+        node.stop_distance()   # nothing from the reset/handshake (teleports) is counted
+        node.get_logger().info(f"[episode {node.episode_index}] episode reset: issuing /reset_simulation")
+        self._issue_reset_recovery()
+        util.unpause_simulation(node, 0)
+
+        # Handshake
         ready, status, attempt = False, "", 0
         for attempt in range(MAX_INIT_ATTEMPTS):
-            ready, status = wait_for_episode_ready(node, did_reset, goal_before)
+            ready, status = self._wait_for_episode_ready(goal_before)
             if ready:
                 break
             node.get_logger().warning(
                 f"[episode {node.episode_index}] handshake FAILED (attempt {attempt + 1}/{MAX_INIT_ATTEMPTS}): "
                 f"{status} -- not starting TD3 control, episode NOT counted")
-            _safe_stop(node)
+            self._safe_stop()
             if attempt < MAX_INIT_ATTEMPTS - 1:
-                # Real recovery (not just re-verification) only when a
-                # hard reset was already the expected end-state for this
-                # slot (did_reset, i.e. the previous episode ended in
-                # failure, or reset_on_success just reset it above) --
-                # issuing /reset_simulation otherwise would teleport the
-                # robot away from the "continue from where it succeeded"
-                # state the non-reset path is intentionally preserving,
-                # which would be a real behavior change, not a recovery.
-                if did_reset:
-                    node.get_logger().warning(
-                        f"[episode {node.episode_index}] initiating reset recovery...")
-                    _issue_reset_recovery(node)
-                    node.get_logger().warning(
-                        f"[episode {node.episode_index}] reset recovery issued")
+                # Recovery (exceptional, reported separately from the episode reset above):
+                # _safe_stop paused Gazebo; reset again, unpause, and re-verify.
+                node.get_logger().warning(
+                    f"[episode {node.episode_index}] initiating reset recovery...")
+                self._issue_reset_recovery()
+                node.get_logger().warning(
+                    f"[episode {node.episode_index}] reset recovery issued")
                 util.unpause_simulation(node, 0)
-                if did_reset:
-                    node.get_logger().warning(
-                        f"[episode {node.episode_index}] retrying episode-ready verification...")
+                node.get_logger().warning(
+                    f"[episode {node.episode_index}] retrying episode-ready verification...")
 
         if not ready:
-            # Fail clearly rather than silently returning a bogus
-            # observation -- matches this project's established
-            # "don't proceed on timeout" handshake semantics.
             raise RuntimeError(
                 f"AdaptiveFPSEnv.reset(): episode-ready handshake failed after "
                 f"{MAX_INIT_ATTEMPTS} attempts: {status}")
 
         # Save current goal
         node.goal_baseline = node.goal_msg_count
-        retry_word = "recovery" if (attempt and did_reset) else "retries"
+        retry_word = "recovery" if attempt else "retries"
         node.get_logger().info(
             f"[episode {node.episode_index}] ready after {attempt} {retry_word}: "
             f"initial_fps={self.current_fps} obs_interval={self.obs_interval}")
 
-        # Reset Observation and scan ages
+        # Reset Adaptive FPS variables:
+        self.current_fps = max(self.fps_choices)
+        self.obs_interval = node.reset_gate(self.current_fps)        
         observation = util.init_episode(node) # initial observation (44D)
         self.current_observation = observation
+        self.steps_since_last_obs = 0
         self.world_step_count = 0
         self.prev_navigation_action = [0.0, 0.0]
         self.native_scan_count = 1 #GT scan acquired
-
-        #last_gated_scan_count is the last saved value of scans
-        # that have been forwarded to the navigation stack
-        self.last_gated_scan_count = node.gated_scan_count
-        self.episode_frame_count = 1 #Counted frame/scan acquired
+        self.prev_gated_scan_count = node.gated_scan_count
+        self.episode_scan_count = 1  # fresh scan acquired during episode initialization
         self._initial_goal_distance = observation[NUM_SCAN_SAMPLES] * MAX_GOAL_DISTANCE
         self._previous_goal_distance = self._initial_goal_distance
-
-        # Diagnostics-only episode-time origin (x/y/wall_time/sim_time in
-        # info, for steps.csv/trajectory.csv) -- reuses node.latest_odom,
-        # already maintained by FixedSensingEvaluator (no new subscriber).
-        # sim_time is derived from the odom message's own header.stamp,
-        # not the most recently arrived /clock tick, so it stays exactly
-        # synchronized with whichever odom reading also supplies x/y at
-        # each step. Same pattern eval_adaptive_fps.py's run_episode()
-        # already uses for episode_start_sim.
         self._episode_start_wall = time.perf_counter()
         self._episode_start_sim = stamp_to_sec(node.latest_odom.header.stamp) if node.latest_odom is not None else None
+        # Odometry distance starts here, from the handshake-confirmed reset pose
+        start_pos = node.latest_odom.pose.pose.position
+        node.start_distance(start_pos.x, start_pos.y)
 
-        # Clear any previous episode's recording buffers and (re)arm
-        # _on_native_scan/_on_obstacle_odom -- both callbacks are
-        # permanent subscriptions (created once in __init__) that fire
-        # throughout the handshake too, so buffers must only start
-        # filling from this exact origin, matching record_episode.py's
-        # own "not self.current.ready: return" guard.
+        # Clear any previous episode's recording buffers 
         self._lidar_t_wall = []
         self._lidar_t_sim = []
         self._lidar_ranges = []
@@ -450,8 +420,7 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self._obstacle_yaw = []
         self._recording_active = True
 
-        # Published exactly once per valid episode, matching
-        # eval_adaptive_fps.py's run_episode() -- purely informational
+        # Published exactly once per valid episode -- purely informational
         # (no subscriber affects control/reward/sensing), but required
         # for tools/episode_recorder/record_episode.py's EpisodeRecorder
         # (if run alongside this env) to anchor its own t_wall=0/t_sim=0
@@ -459,19 +428,24 @@ class AdaptiveFPSEnv(gymnasium.Env):
         node.ready_pub.publish(EmptyMsg())
 
         # Create reset observation and Info
-        fps_ratio, obs_age_ratio, episode_frame_count_ratio = self._augmented_features()
-        ppo_observation = np.concatenate(
-            [np.asarray(observation, dtype=np.float32), [fps_ratio, obs_age_ratio, episode_frame_count_ratio]]
-        ).astype(np.float32)
+        ppo_observation = self.get_augmented_obs(observation)
         info = {
             "current_fps": self.current_fps,
             "obs_interval": self.obs_interval,
-            "scan_interval_k": self.obs_interval,  # backward-compatible alias
-            "fps_ratio": fps_ratio,
-            "obs_age_ratio": obs_age_ratio,
-            "episode_frame_count_ratio": episode_frame_count_ratio,
+            "scan_interval_k": self.obs_interval,
+            "fps_ratio": self.fps_ratio,
+            "obs_age_ratio": self.obs_age_ratio,
+            "episode_scan_count_ratio": self.episode_scan_count_ratio,
+            "budget": self.budget,
         }
         return ppo_observation, info
+
+    def dist_reward(self, previous_distance, current_distance):
+        """Normalized progress toward goal."""
+        if self._initial_goal_distance <= 0.0:
+            return 0.0
+        reward = 10.0 * (previous_distance - current_distance) / self._initial_goal_distance
+        return float(reward)
 
     def _navigation_step(self, navigation_action):
         """TurtleBot equivalent of F1TENTH's self._physics_step(): one
@@ -481,144 +455,74 @@ class AdaptiveFPSEnv(gymnasium.Env):
         return util.step(self.node, navigation_action, self.prev_navigation_action)
 
     def step(self, action):
+        
         node = self.node
-        requested_fps = self.fps_choices[int(action)]
-
-        # ---------------------------------
-        # PPO-step sim-time boundary (see PPO_RATE_HZ/PPO_DT above).
-        # step_start_sim_time is captured once, before any control tick in
-        # this PPO step runs, so the boundary check below always measures
-        # elapsed /clock time from the start of THIS PPO step, regardless
-        # of how many inner control ticks it takes to reach it.
-        # ---------------------------------
+        self.steps_since_last_obs += 1
         step_start_sim_time = node.latest_sim_time
-        frame_consumed = False
-        inner_ticks = 0  # diagnostic only -- control ticks consumed by this one PPO step
 
+        frame_consumed = False  # sticky for the whole PPO step: set once any new gated scan arrives
         while True:
-            inner_ticks += 1
             self.world_step_count += 1
 
-            # ---------------------------------
             # 1. Frozen navigation uses currently held observation
-            # ---------------------------------
-            navigation_action = node.model.get_action(self.current_observation, False, self.world_step_count, False)
+            navigation_action = self.navigation_model.get_action(self.current_observation, False, self.world_step_count, False)
 
-            # ---------------------------------
             # 2. One control transition
-            # ---------------------------------
-            observation, nav_reward, done, outcome, dist_trav = self._navigation_step(navigation_action)
-            self.current_observation = observation
-            # Updated immediately (not after reward/section 4 below) so
-            # that if this PPO step spans further inner control ticks,
-            # each one's _navigation_step() call receives the true
-            # immediately-preceding action -- exactly the same per-tick
-            # causal ordering the (formerly single-tick) step() always had.
+            nav_observation, _, done, outcome, _ = self._navigation_step(navigation_action)
+            self.current_observation = nav_observation
             self.prev_navigation_action = copy.deepcopy(navigation_action)
 
-            # ---------------------------------
             # 3. Sampling Timer
-            # ---------------------------------
-            new_gated_scans = node.gated_scan_count - self.last_gated_scan_count
-            tick_frame_consumed = new_gated_scans > 0
-            self.last_gated_scan_count = node.gated_scan_count
+            # Newly forwarded scans since the previous tick (exact, even if >1 arrive in one gap)
+            new_gated_scans = node.gated_scan_count - self.prev_gated_scan_count
+            self.prev_gated_scan_count = node.gated_scan_count
 
-            if tick_frame_consumed:
-                frame_consumed = True  # sticky for the whole PPO step -- at most one
-                                        # tick per PPO step can be causal, since 10 Hz
-                                        # (1 PPO step) is the fastest sensing choice.
-                self.episode_frame_count += new_gated_scans  # exact, even if >1 scan
-                                                               # forwarded within one step's gap
-                # The action selected at THIS sampling instant controls the
-                # FUTURE sensing rate -- never retroactive to navigation_action
-                # above, which already used the previously-held (or
-                # just-forced) scan. _on_real_scan re-reads node.k fresh on
-                # every real /scan arrival, so this takes effect starting
-                # with the NEXT interval only.
-                self.current_fps = requested_fps
-                self.obs_interval = max(1, round(NATIVE_SCAN_HZ / self.current_fps))
-                node.k = self.obs_interval
+            if new_gated_scans > 0:
+                frame_consumed = True
+                self.steps_since_last_obs = 0
+                self.episode_scan_count += new_gated_scans
+                self.current_fps = self.fps_choices[int(action)]
+                self.obs_interval = node.set_sensing_rate(self.current_fps)
 
+            # Termination checks
             terminated = bool(done)
             if terminated:
-                # Terminate the PPO step immediately on episode end, even
-                # mid-way through the PPO_DT window -- the terminal
-                # reward/outcome below is preserved exactly as it always
-                # was for a single-tick step().
                 break
 
-            if (step_start_sim_time is not None and node.latest_sim_time is not None
-                    and node.latest_sim_time >= step_start_sim_time + PPO_DT):
-                break
-            # Otherwise: PPO_DT not yet elapsed and the episode hasn't
-            # ended -- run another control tick (loop). The TD3 controller
-            # and its RPC rate are completely unaffected by this loop.
+            # Enforce PPO simulation interval
+            if step_start_sim_time is not None and node.latest_sim_time is not None:
+                elapsed_sim_time = node.latest_sim_time - step_start_sim_time
+                if (elapsed_sim_time > PPO_DT or math.isclose(elapsed_sim_time,PPO_DT,rel_tol=0.0,abs_tol=1e-6,)):
+                    break   
 
-        # ---------------------------------
-        # 4. Reward -- computed once per PPO step (not per inner control
-        # tick), from the FINAL inner tick's state vs. this PPO step's
-        # starting goal distance. This is the same single-reward formula
-        # already used for a single control tick, just evaluated across
-        # the (now possibly multi-tick) PPO step -- no reward accumulation
-        # or variable-duration discounting is introduced.
-        # ---------------------------------
-        goal_distance_norm = float(observation[NUM_SCAN_SAMPLES])
-        goal_distance_m = goal_distance_norm * MAX_GOAL_DISTANCE
-        adaptive_reward = get_adaptive_reward(
-            self._previous_goal_distance, goal_distance_m, self._initial_goal_distance)
-        self._previous_goal_distance = goal_distance_m
+        # 4. Get Nav Reward
+        goal_distance_norm = float(nav_observation[NUM_SCAN_SAMPLES])
+        current_goal_distance = goal_distance_norm * MAX_GOAL_DISTANCE
+        nav_reward = self.dist_reward(self._previous_goal_distance, current_goal_distance)
+
+        # 5. Get Frame Penalty and Adaptive Reward
+        self._previous_goal_distance = current_goal_distance
         frame_penalty = self.frame_cost if frame_consumed else 0.0
-        # Reward decomposition, exposed in info (see section 6) so a
-        # logger never has to recompute/re-derive these -- by
-        # construction, navigation_reward + frame_cost_reward +
-        # terminal_reward == reward, exactly.
-        navigation_reward = adaptive_reward
-        frame_cost_reward = -frame_penalty
+        adaptive_reward = nav_reward - frame_penalty
+
+        # Terminal reward/penalty
         terminal_reward = 0.0
-        reward = adaptive_reward - frame_penalty
-
-        truncated = False  # DRLEnvironment's own TIMEOUT outcome is already
-                            # reported via `done`/`outcome`; no separate
-                            # Gym-level truncation concept is introduced here.
-
         if terminated:
-            terminal_reward = 1.5 if outcome == SUCCESS else -1.5
-            reward += terminal_reward
-            util.pause_simulation(node, 0)
-            self._expect_reset = not (outcome == SUCCESS)
+            if outcome == SUCCESS:
+                terminal_reward = R_SUCCESS
+            elif outcome in (COLLISION_WALL, COLLISION_OBSTACLE, TUMBLE):
+                terminal_reward = R_COLLISION
+            elif outcome == TIMEOUT:
+                terminal_reward = R_TIMEOUT
+            adaptive_reward += terminal_reward
+            util.pause_simulation(node, 0)   # keep Gazebo paused until the next reset()
+            node.stop_distance()
 
-        # ---------------------------------
-        # Sensing-state features -- appended to the PPO-facing observation
-        # only, never fed to the frozen TD3 navigation policy (section 1
-        # above already ran on the un-augmented self.current_observation).
-        # TEMPORARY debug print for this validation stage.
-        # ---------------------------------
-        fps_ratio, obs_age_ratio, episode_frame_count_ratio = self._augmented_features()
-        # if frame_consumed or self.world_step_count % 200 == 0:
-        #     print(
-        #         f"[AdaptiveFPS] "
-        #         f"step={self.world_step_count:06d} "
-        #         f"fresh={int(frame_consumed)} "
-        #         f"fps={self.current_fps:4.1f} "
-        #         f"fps_ratio={fps_ratio:.3f} "
-        #         f"obs_age={node.scans_since_forward:3d} "
-        #         f"obs_age_ratio={obs_age_ratio:.3f} "
-        #         f"frame_count={self.episode_frame_count:4d} "
-        #         f"frame_count_ratio={episode_frame_count_ratio:.3f}"
-        #     )
-        # ---------------------------------
-        # 5. Adaptive-policy observation (PPO-facing)
-        # ---------------------------------
-        ppo_observation = np.concatenate(
-            [np.asarray(observation, dtype=np.float32), [fps_ratio, obs_age_ratio, episode_frame_count_ratio]]
-        ).astype(np.float32)
+        truncated = False
 
-        # ---------------------------------
-        # Diagnostics only: x/y/wall_time/sim_time, for steps.csv/
-        # trajectory.csv logging by the evaluator. Reuses node.latest_odom
-        # (already maintained by FixedSensingEvaluator) -- no new ROS
-        # subscriber, no effect on control/reward/timing.
-        # ---------------------------------
+        ppo_observation = self.get_augmented_obs(nav_observation)
+
+        # Collect step diagnostics for logging purposes
         x = y = float("nan")
         yaw = float("nan")
         sim_time = None
@@ -630,63 +534,57 @@ class AdaptiveFPSEnv(gymnasium.Env):
                 sim_time = stamp_to_sec(node.latest_odom.header.stamp) - self._episode_start_sim
         wall_time = time.perf_counter() - self._episode_start_wall
 
-        # ---------------------------------
         # 6. Info
-        # ---------------------------------
         info = {
-            "frame_penalty": frame_penalty,
-            "frame_cost": self.frame_cost,
-            "navigation_action": navigation_action,
+            # Step and timing
+            "wall_time": wall_time,
+            "sim_time": sim_time,
+            "ppo_step_sim_dt": (
+                node.latest_sim_time - step_start_sim_time
+                if (step_start_sim_time is not None and node.latest_sim_time is not None)
+                else None
+            ),
+
+            # Rewards
             "nav_reward": nav_reward,
+            "frame_cost": self.frame_cost,
+            "frame_penalty": frame_penalty,
+            "terminal_reward": terminal_reward,
+
+            # Budget
+            "budget": self.budget,
+            "episode_scan_count": self.episode_scan_count,
+
+            # Sensing frequency
             "current_fps": self.current_fps,
             "obs_interval": self.obs_interval,
-            "scans_since_last_obs": node.scans_since_forward,
+
+            # Scan consumption
             "frame_consumed": frame_consumed,
-            "lidar_fresh": frame_consumed,
-            "episode_frame_count": self.episode_frame_count,
-            "goal_distance_m": goal_distance_m,
-            "outcome": outcome,
-            "outcome_str": util.translate_outcome(outcome),
             "native_scan_count": self.native_scan_count,
+            "scans_since_last_obs": node.scans_since_forward,
+
+            # Augmented observation
+            "fps_ratio": self.fps_ratio,
+            "obs_age_ratio": self.obs_age_ratio,
+            "episode_scan_count_ratio": self.episode_scan_count_ratio,
+
+            # Navigation and goal
+            "navigation_action": navigation_action,
             "x": x,
             "y": y,
             "yaw": yaw,
-            # Absolute goal coordinates (not just goal_distance_m) --
-            # reused directly from node.latest_goal_xy, already
-            # maintained by FixedSensingEvaluator._on_goal_pose (no new
-            # subscriber). None until the first /goal_pose is observed.
             "goal_x": node.latest_goal_xy[0] if node.latest_goal_xy is not None else None,
             "goal_y": node.latest_goal_xy[1] if node.latest_goal_xy is not None else None,
-            "wall_time": wall_time,
-            "sim_time": sim_time,
-            "fps_ratio": fps_ratio,
-            "obs_age_ratio": obs_age_ratio,
-            "episode_frame_count_ratio": episode_frame_count_ratio,
+            "goal_distance_m": current_goal_distance,
             "goal_distance_norm": goal_distance_norm,
-            # Reward decomposition -- navigation_reward + frame_cost_reward
-            # + terminal_reward == the (float) reward this step() call
-            # returns, exactly. navigation_reward is the goal-progress
-            # component of THIS (PPO/adaptive) reward -- distinct from
-            # nav_reward above, which is the raw per-tick DRLEnvironment/
-            # TD3 reward, a separate, older diagnostic never used in the
-            # PPO reward calculation.
-            "navigation_reward": navigation_reward,
-            "frame_cost_reward": frame_cost_reward,
-            "terminal_reward": terminal_reward,
-            # backward-compatible aliases
-            "scan_interval_k": self.obs_interval,
-            "scans_since_last_observation": node.scans_since_forward,
-            # PPO-timestep-decoupling diagnostics (temporary, for verifying
-            # the PPO_RATE_HZ/PPO_DT behavior) -- inner_ticks = number of
-            # control ticks this one PPO step consumed; ppo_step_sim_dt =
-            # actual /clock time elapsed during this PPO step, should be
-            # >= PPO_DT (0.1s) except on episode-terminating steps.
-            "inner_ticks": inner_ticks,
-            "ppo_step_sim_dt": (
-                node.latest_sim_time - step_start_sim_time
-                if (step_start_sim_time is not None and node.latest_sim_time is not None) else None),
+            "distance_traveled_m": node.distance_traveled_m,   # odometry path length this episode (m)
+
+            # Episode outcome
+            "outcome": outcome,
+            "outcome_str": util.translate_outcome(outcome),
         }
-        return ppo_observation, float(reward), terminated, truncated, info
+        return ppo_observation, float(adaptive_reward), terminated, truncated, info
 
     def close(self):
         self.node.destroy_node()

@@ -9,6 +9,7 @@ tmux*
 FixedFPS/eval/
 
 # Generated AdaptiveFPS experiments
+Adaptive_Policies_SimpleEnv/
 AdaptiveFPS/eval/
 AdaptiveFPS/runs/
 old_results/
@@ -20,3 +21,9 @@ old_results/
 # Python cache
 __pycache__/
 *.pyc
+
+# models
+*.pt
+
+# TensorBoard event files
+events.out.tfevents.*

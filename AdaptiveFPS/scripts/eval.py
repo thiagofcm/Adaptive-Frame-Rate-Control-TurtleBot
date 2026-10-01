@@ -41,9 +41,8 @@ from torch.distributions.categorical import Categorical
 
 sys.path.insert(0, os.environ["DRLNAV_BASE_PATH"])
 from AdaptiveFPS.env.adaptive_fps_env import AdaptiveFPSEnv  # noqa: E402
-
-sys.path.insert(0, os.path.join(os.environ["DRLNAV_BASE_PATH"], "AdaptiveFPS", "scripts"))
-from eval_adaptive_fps import fmt_hz  # noqa: E402  (reused, not re-derived)
+from AdaptiveFPS.env.adaptive_obs import (  # noqa: E402
+    ADAPTIVE_FRAME_BUDGET, ADAPTIVE_OBS_DIM, ADAPTIVE_OBS_LAYOUT, check_adaptive_checkpoint)
 
 sys.path.insert(0, os.path.join(os.environ["DRLNAV_BASE_PATH"], "tools", "episode_recorder"))
 from record_episode import load_world_geometry  # noqa: E402  (reused, not re-derived --
@@ -53,18 +52,18 @@ from record_episode import load_world_geometry  # noqa: E402  (reused, not re-de
                                                   # recording is separate, see
                                                   # get_recording_arrays())
 
+# Rate label formatting for run folders and logs.
+def fmt_hz(hz):
+    if abs(hz - round(hz)) < 1e-9:
+        return str(int(round(hz)))
+    return f"{hz:.2f}".rstrip("0").rstrip(".")
+
+
 EPISODE_CSV_FIELDS = [
     "episode", "policy_type", "fixed_fps", "mean_fps", "success", "outcome", "outcome_str",
     "n_steps", "episode_return", "fresh_observations", "native_scans",
-    "final_goal_distance_m", "final_obs_interval",
+    "final_goal_distance_m", "final_obs_interval", "distance_traveled_m",
     "fresh_observation_ratio", "native_scans_per_fresh_observation",
-]
-
-STEP_CSV_FIELDS = [
-    "step", "wall_time", "sim_time", "x", "y", "goal_distance_m",
-    "current_fps", "obs_interval", "frame_consumed", "frame_penalty", "frame_cost",
-    "episode_frame_count", "scans_since_last_obs", "instant_reward", "cumulative_reward",
-    "outcome", "outcome_str",
 ]
 
 # Schema matches tools/episode_recorder/record_episode.py's
@@ -73,24 +72,19 @@ STEP_CSV_FIELDS = [
 # source unmodified.
 TRAJECTORY_CSV_FIELDS = ["t_wall", "t_sim", "x", "y", "yaw", "goal_x", "goal_y"]
 
-# One row per completed AdaptiveFPSEnv.step() call (one outer PPO
-# transition -- since the PPO_RATE_HZ/PPO_DT change, step() already
-# internally loops the dense inner TD3/control ticks, so this is NOT a
-# downsampled version of steps.csv, it's a differently-shaped view of the
-# same per-outer-step data steps.csv already holds, plus the reward
-# decomposition and a couple of fields steps.csv doesn't carry (yaw,
-# goal_distance_norm, action_linear/angular, ppo_reward_cumulative).
-# steps.csv itself is left completely unchanged.
-PPO_STEP_CSV_FIELDS = [
-    "ppo_step", "t_wall_s", "t_sim_s", "ppo_step_sim_dt", "inner_ticks",
-    "x", "y", "yaw", "goal_distance_m", "goal_distance_norm",
-    "ppo_reward", "ppo_reward_cumulative",
-    "navigation_reward", "terminal_reward", "frame_cost_reward",
+# steps.csv: one row per completed AdaptiveFPSEnv.step() call (one PPO
+# step; the inner TD3/control ticks are only summarized via
+# ppo_step_sim_dt). The per-run constant frame_cost is in metadata.json.
+STEP_CSV_FIELDS = [
+    "ppo_step", "t_wall_s", "t_sim_s", "ppo_step_sim_dt",
+    "x", "y", "yaw", "goal_distance_m", "goal_distance_norm", "distance_traveled_m",
+    "instant_adaptive_reward", "cumulative_adaptive_reward",
+    "instant_nav_reward", "cumulative_nav_reward", "terminal_reward", "frame_penalty",
     "fresh_observation", "frame_consumed", "episode_frame_count",
-    "current_fps", "scan_divisor_k",
+    "current_fps", "obs_interval",
     "obs_age_ratio", "fps_ratio", "frame_count_ratio",
     "action_linear", "action_angular",
-    "outcome", "done",
+    "outcome", "outcome_str", "done",
 ]
 
 # Adaptive mode + --diagnose-probs only: one row per causal sensing
@@ -105,6 +99,7 @@ SUMMARY_CSV_FIELDS = [
     "mean_episode_return", "std_episode_return",
     "mean_n_steps", "std_n_steps",
     "mean_final_goal_distance_m",
+    "mean_distance_traveled_m", "std_distance_traveled_m",
     "mean_fresh_observations", "std_fresh_observations",
     "mean_native_scans_per_fresh_observation",
 ]
@@ -226,11 +221,11 @@ def run_episode(env, episode_num, action_index=None, requested_fps=None, model=N
     policy's action probabilities -- deterministic action selection
     itself (argmax) is unchanged, this is a read-only diagnostic.
 
-    If episode_dir is given, ppo_step.csv is written there incrementally
+    If episode_dir is given, steps.csv is written there incrementally
     (one row per completed env.step() call, flushed immediately) so the
     file stays valid even if the process is interrupted mid-episode --
-    unlike steps.csv/trajectory.csv, which are only written once the
-    whole episode's rows are already collected in memory."""
+    unlike trajectory.csv, which is only written once the whole
+    episode's rows are already collected in memory."""
     observation, reset_info = env.reset()
     initial_current_fps = reset_info["current_fps"]
     initial_obs_interval = reset_info["obs_interval"]
@@ -247,24 +242,25 @@ def run_episode(env, episode_num, action_index=None, requested_fps=None, model=N
     causal_decision_rows = []
     cumulative_reward = 0.0
     step = 0
-    # ppo_step / ppo_reward_cumulative: reset here, i.e. once per episode
+    # ppo_step / cumulative_adaptive_reward / cumulative_nav_reward: reset here, i.e. once per episode
     # (run_episode() is called once per episode), matching the requested
     # "reset at the beginning of every episode" semantics.
     ppo_step = 0
-    ppo_reward_cumulative = 0.0
+    cumulative_adaptive_reward = 0.0
+    cumulative_nav_reward = 0.0
     causal_fps_counts = Counter()
     causal_fps_sum = 0.0
     causal_ticks = 0
     terminated = truncated = False
     info = reset_info
 
-    ppo_step_file = None
-    ppo_step_writer = None
+    steps_file = None
+    steps_writer = None
     if episode_dir is not None:
-        ppo_step_file = open(os.path.join(episode_dir, "ppo_step.csv"), "w", newline="")
-        ppo_step_writer = csv.DictWriter(ppo_step_file, fieldnames=PPO_STEP_CSV_FIELDS)
-        ppo_step_writer.writeheader()
-        ppo_step_file.flush()
+        steps_file = open(os.path.join(episode_dir, "steps.csv"), "w", newline="")
+        steps_writer = csv.DictWriter(steps_file, fieldnames=STEP_CSV_FIELDS)
+        steps_writer.writeheader()
+        steps_file.flush()
 
     try:
         while not (terminated or truncated):
@@ -320,7 +316,7 @@ def run_episode(env, episode_num, action_index=None, requested_fps=None, model=N
                 "frame_consumed": info["frame_consumed"],
                 "frame_penalty": info["frame_penalty"],
                 "frame_cost": info["frame_cost"],
-                "episode_frame_count": info["episode_frame_count"],
+                "episode_frame_count": info["episode_scan_count"],
                 "scans_since_last_obs": info["scans_since_last_obs"],
                 "instant_reward": reward,
                 "cumulative_reward": cumulative_reward,
@@ -328,56 +324,59 @@ def run_episode(env, episode_num, action_index=None, requested_fps=None, model=N
                 "outcome_str": info["outcome_str"],
             })
 
-            if ppo_step_writer is not None:
+            if steps_writer is not None:
                 # One row per completed AdaptiveFPSEnv.step() call -- i.e.
                 # one row per outer PPO transition, never per inner TD3/
                 # control tick (that granularity is only ever visible
                 # inside AdaptiveFPSEnv.step()'s own inner loop, and is
-                # summarized here only via inner_ticks/ppo_step_sim_dt).
+                # summarized here only via ppo_step_sim_dt).
                 # Every field below is either an existing info[...] value
-                # used directly, or one of the two counters (ppo_step,
-                # ppo_reward_cumulative) this function already owns --
+                # used directly, or one of the counters (ppo_step and the two
+                # cumulative rewards) this function already owns --
                 # no value is recomputed from anything else.
                 ppo_step += 1
-                ppo_reward_cumulative += reward
+                cumulative_adaptive_reward += reward
+                cumulative_nav_reward += info["nav_reward"]
                 navigation_action = info["navigation_action"]
-                ppo_step_writer.writerow({
+                steps_writer.writerow({
                     "ppo_step": ppo_step,
                     "t_wall_s": info["wall_time"],
                     "t_sim_s": info["sim_time"],
                     "ppo_step_sim_dt": info["ppo_step_sim_dt"],
-                    "inner_ticks": info["inner_ticks"],
                     "x": info["x"],
                     "y": info["y"],
                     "yaw": info["yaw"],
                     "goal_distance_m": info["goal_distance_m"],
                     "goal_distance_norm": info["goal_distance_norm"],
-                    "ppo_reward": reward,
-                    "ppo_reward_cumulative": ppo_reward_cumulative,
-                    "navigation_reward": info["navigation_reward"],
+                    "distance_traveled_m": info["distance_traveled_m"],
+                    "instant_adaptive_reward": reward,
+                    "cumulative_adaptive_reward": cumulative_adaptive_reward,
+                    "instant_nav_reward": info["nav_reward"],
+                    "cumulative_nav_reward": cumulative_nav_reward,
                     "terminal_reward": info["terminal_reward"],
-                    "frame_cost_reward": info["frame_cost_reward"],
+                    "frame_penalty": info["frame_penalty"],
                     "fresh_observation": info["frame_consumed"],
                     "frame_consumed": info["frame_consumed"],
-                    "episode_frame_count": info["episode_frame_count"],
+                    "episode_frame_count": info["episode_scan_count"],
                     "current_fps": info["current_fps"],
-                    "scan_divisor_k": info["scan_interval_k"],
+                    "obs_interval": info["obs_interval"],
                     "obs_age_ratio": info["obs_age_ratio"],
                     "fps_ratio": info["fps_ratio"],
-                    "frame_count_ratio": info["episode_frame_count_ratio"],
+                    "frame_count_ratio": info["episode_scan_count_ratio"],
                     "action_linear": navigation_action[0],
                     "action_angular": navigation_action[1],
                     "outcome": info["outcome"],
+                    "outcome_str": info["outcome_str"],
                     "done": terminated,
                 })
-                ppo_step_file.flush()
+                steps_file.flush()
     finally:
-        if ppo_step_file is not None:
-            ppo_step_file.close()
+        if steps_file is not None:
+            steps_file.close()
 
     success = info["outcome_str"] == "SUCCESS"
     native_scans = info["native_scan_count"]
-    fresh_observations = info["episode_frame_count"]
+    fresh_observations = info["episode_scan_count"]
     fresh_observation_ratio = (fresh_observations / native_scans) if native_scans else 0.0
     native_scans_per_fresh_observation = (native_scans / fresh_observations) if fresh_observations else 0.0
     mean_fps = (causal_fps_sum / causal_ticks) if causal_ticks else 0.0
@@ -396,6 +395,7 @@ def run_episode(env, episode_num, action_index=None, requested_fps=None, model=N
         "native_scans": native_scans,
         "final_goal_distance_m": info["goal_distance_m"],
         "final_obs_interval": info["obs_interval"],
+        "distance_traveled_m": info["distance_traveled_m"],
         "fresh_observation_ratio": fresh_observation_ratio,
         "native_scans_per_fresh_observation": native_scans_per_fresh_observation,
         # metadata.json-only fields, not written to episodes.csv
@@ -408,7 +408,8 @@ def run_episode(env, episode_num, action_index=None, requested_fps=None, model=N
     return episode_data, step_rows, causal_decision_rows
 
 
-def build_metadata(env, args, action_index, episode_data, model_path=None, lstm_hidden_size=None):
+def build_metadata(env, args, action_index, episode_data, model_path=None, lstm_hidden_size=None,
+                   checkpoint_summary=None):
     metadata = {
         "episode": episode_data["episode"],
         "policy_type": episode_data["policy_type"],
@@ -427,6 +428,10 @@ def build_metadata(env, args, action_index, episode_data, model_path=None, lstm_
         "mean_fps": episode_data["mean_fps"],
         "causal_ticks": episode_data["causal_ticks"],
         "causal_fps_action_counts": episode_data["causal_fps_action_counts"],
+        "policy_obs_dim": int(np.prod(env.observation_space.shape)),
+        "policy_obs_layout": ADAPTIVE_OBS_LAYOUT,
+        "frame_budget": env.budget,
+        "frame_cost": env.frame_cost,
     }
     if model_path is None:
         metadata["requested_fixed_fps"] = args.fps
@@ -434,6 +439,10 @@ def build_metadata(env, args, action_index, episode_data, model_path=None, lstm_
     else:
         metadata["model_path"] = model_path
         metadata["lstm_hidden_size"] = lstm_hidden_size
+        if checkpoint_summary is not None:
+            metadata["checkpoint_env_id"] = checkpoint_summary["env_id"]
+            metadata["checkpoint_scene"] = checkpoint_summary["scene"]
+            metadata["checkpoint_budget"] = checkpoint_summary["budget"]
     return metadata
 
 
@@ -477,6 +486,8 @@ def summarize_results(eval_root):
         final_goal_distance_m = np.array([float(row["final_goal_distance_m"]) for row in rows])
         fresh_observations = np.array([float(row["fresh_observations"]) for row in rows])
         native_per_fresh = np.array([float(row["native_scans_per_fresh_observation"]) for row in rows])
+        # episodes.csv files written before distance_traveled_m existed: leave the columns blank
+        distance = [float(row["distance_traveled_m"]) for row in rows if row.get("distance_traveled_m") not in (None, "")]
 
         summary_rows.append({
             "run_name": run_name,
@@ -488,6 +499,8 @@ def summarize_results(eval_root):
             "mean_n_steps": float(n_steps.mean()),
             "std_n_steps": float(n_steps.std()),
             "mean_final_goal_distance_m": float(final_goal_distance_m.mean()),
+            "mean_distance_traveled_m": float(np.mean(distance)) if distance else "",
+            "std_distance_traveled_m": float(np.std(distance)) if distance else "",
             "mean_fresh_observations": float(fresh_observations.mean()),
             "std_fresh_observations": float(fresh_observations.std()),
             "mean_native_scans_per_fresh_observation": float(native_per_fresh.mean()),
@@ -572,20 +585,29 @@ def main():
                               "distribution at each causal sensing decision (frame_consumed=True), "
                               "and save it to causal_decisions.csv per episode. Deterministic "
                               "(argmax) action selection is unaffected -- diagnostic only, off by default.")
+    parser.add_argument("--eval-root", type=str, default=None,
+                         help="directory that receives the fixed_*Hz/ or adaptive_*/ run folders and "
+                              "summary.csv (default: $DRLNAV_BASE_PATH/AdaptiveFPS/eval). Use a separate "
+                              "root per stage so results from different worlds never mix.")
     args = parser.parse_args()
 
-    # reset_on_success=True: evaluation-only -- every episode starts from
-    # the same fixed reset pose regardless of outcome, instead of a
-    # SUCCESS leaving the robot wherever it stopped. Improves cross-policy
-    # comparability; training (train_adaptive_fps_ppo.py) keeps the
-    # default (False), unaffected.
-    env = AdaptiveFPSEnv(reset_on_success=True)
+    # Every episode starts from the same reset pose regardless of the previous outcome
+    # (AdaptiveFPSEnv owns one /reset_simulation per episode; gazebo_goals runs with external_reset:=true).
+    env = AdaptiveFPSEnv()
     try:
-        eval_root = os.path.join(os.environ["DRLNAV_BASE_PATH"], "AdaptiveFPS", "eval")
+        # The sensing policy's observation is the canonical 43-D one (AdaptiveFPS/env/adaptive_obs.py);
+        # refuse to run if the environment was edited to produce anything else.
+        obs_dim = int(np.prod(env.observation_space.shape))
+        if obs_dim != ADAPTIVE_OBS_DIM or env.budget != ADAPTIVE_FRAME_BUDGET:
+            raise SystemExit(f"AdaptiveFPSEnv provides a {obs_dim}-D observation with frame budget {env.budget}; "
+                             f"expected {ADAPTIVE_OBS_DIM}-D with budget {ADAPTIVE_FRAME_BUDGET}")
+        eval_root = (os.path.abspath(args.eval_root) if args.eval_root is not None
+                     else os.path.join(os.environ["DRLNAV_BASE_PATH"], "AdaptiveFPS", "eval"))
 
         action_index = None
         model = None
         lstm_hidden_size = None
+        checkpoint_summary = None
 
         if args.fps is not None:
             if args.fps not in env.fps_choices:
@@ -596,9 +618,14 @@ def main():
             print("AdaptiveFPSEnv fixed-policy evaluation")
             print(f"  requested fps: {args.fps}")
             print(f"  action index:  {action_index} (fps_choices={env.fps_choices})")
+            print(f"  policy obs:    {obs_dim}-D ({ADAPTIVE_OBS_LAYOUT}), frame budget {env.budget} "
+                  f"(fixed mode: no policy is loaded)")
         else:
             checkpoint = torch.load(args.model, map_location="cpu")
-            obs_dim = int(np.prod(env.observation_space.shape))
+            try:
+                checkpoint_summary = check_adaptive_checkpoint(checkpoint, env.fps_choices, env.budget)
+            except ValueError as exc:
+                raise SystemExit(f"cannot evaluate {args.model}:\n  {exc}")
             n_actions = env.action_space.n
             lstm_hidden_size = checkpoint.get("args", {}).get("lstm_hidden_size", 64)
 
@@ -617,7 +644,9 @@ def main():
             out_dir = os.path.join(eval_root, f"adaptive_{run_dir_name}_{checkpoint_basename}")
             print("AdaptiveFPSEnv adaptive (recurrent PPO) evaluation")
             print(f"  loaded model:     {args.model}")
-            print(f"  obs_dim:          {obs_dim}")
+            print(f"  obs_dim:          {obs_dim} ({ADAPTIVE_OBS_LAYOUT})")
+            print(f"  frame budget:     {env.budget} (checkpoint: {checkpoint_summary['budget']})")
+            print(f"  trained on:       env_id={checkpoint_summary['env_id']} scene={checkpoint_summary['scene']}")
             print(f"  n_actions:        {n_actions} (fps_choices={env.fps_choices})")
             print(f"  lstm_hidden_size: {lstm_hidden_size}")
             print(f"  diagnose_probs:   {args.diagnose_probs}")
@@ -632,11 +661,29 @@ def main():
         # FixedFPS's EpisodeRecorder writes (record_episode.py's
         # Episode._write_world_geometry) -- never raises, since
         # trajectory/lidar/obstacle recording must proceed without it.
+        # Also rewritten if the cached file was recorded for a different
+        # stage, so a run folder never renders another world's walls.
         world_geometry_path = os.path.join(out_dir, "world_geometry.json")
-        if not os.path.exists(world_geometry_path):
+        try:
+            with open("/tmp/drlnav_current_stage.txt") as f:
+                current_stage = int(f.read())
+        except Exception:
+            current_stage = None
+        cached_stage = None
+        if os.path.exists(world_geometry_path):
             try:
-                with open("/tmp/drlnav_current_stage.txt") as f:
-                    stage = int(f.read())
+                with open(world_geometry_path) as f:
+                    cached_stage = json.load(f).get("stage")
+            except Exception:
+                pass
+            if cached_stage != current_stage:
+                print(f"  world_geometry.json is for stage {cached_stage}, current stage is "
+                      f"{current_stage} -- regenerating")
+        if not os.path.exists(world_geometry_path) or cached_stage != current_stage:
+            try:
+                stage = current_stage
+                if stage is None:
+                    raise RuntimeError("/tmp/drlnav_current_stage.txt missing or unreadable")
                 geometry = load_world_geometry(os.environ["DRLNAV_BASE_PATH"], stage)
                 with open(world_geometry_path, "w") as f:
                     json.dump(geometry, f, indent=2)
@@ -659,22 +706,16 @@ def main():
                 writer.writeheader()
 
             for ep in range(1, args.episodes + 1):
-                # Created before run_episode() (not after, as steps.csv/
-                # trajectory.csv's directory used to be) so ppo_step.csv
-                # can be opened and written incrementally *during* the
-                # episode, not just assembled in memory and written at
-                # the end like steps.csv/trajectory.csv are.
+                # Created before run_episode() so steps.csv can be opened
+                # and written incrementally *during* the episode, not just
+                # assembled in memory and written at the end like
+                # trajectory.csv is.
                 episode_dir = os.path.join(out_dir, f"episode_{ep:04d}")
                 os.makedirs(episode_dir, exist_ok=True)
 
                 episode_data, step_rows, causal_decision_rows = run_episode(
                     env, ep, action_index=action_index, requested_fps=args.fps, model=model,
                     diagnose_probs=args.diagnose_probs, episode_dir=episode_dir)
-
-                with open(os.path.join(episode_dir, "steps.csv"), "w", newline="") as sf:
-                    swriter = csv.DictWriter(sf, fieldnames=STEP_CSV_FIELDS, extrasaction="ignore")
-                    swriter.writeheader()
-                    swriter.writerows(step_rows)
 
                 # Same per-step data already collected above -- no separate
                 # ROS recorder/subscriber, just a projection to its own file.
@@ -713,7 +754,8 @@ def main():
 
                 metadata = build_metadata(
                     env, args, action_index, episode_data,
-                    model_path=args.model, lstm_hidden_size=lstm_hidden_size)
+                    model_path=args.model, lstm_hidden_size=lstm_hidden_size,
+                    checkpoint_summary=checkpoint_summary)
                 with open(os.path.join(episode_dir, "metadata.json"), "w") as mf:
                     json.dump(metadata, mf, indent=2)
 

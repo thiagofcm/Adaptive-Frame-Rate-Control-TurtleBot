@@ -1,0 +1,173 @@
+<?xml version='1.0'?>
+<sdf version='1.6'>
+  <!-- S-shaped corridor for Stage 13 (corridor_dynamic_chase).
+       Generated from CORRIDOR_WALLS in adaptive_sensor_policy/envs/turtlebot_var_scan_rate.py:
+       each (center_x, center_y, length, yaw) becomes a static box of size
+       length x WALL_THICKNESS (0.15) x 0.5, same convention as outer_walls_large. -->
+  <model name='corridor_walls'>
+    <pose frame=''>0 0 0 0 0 0</pose>
+    <link name='corridor_wall_1'>
+      <collision name='corridor_wall_1_collision'>
+        <geometry>
+          <box>
+            <size>1.66 0.15 0.5</size>
+          </box>
+        </geometry>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+      </collision>
+      <visual name='corridor_wall_1_visual'>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>1.66 0.15 0.5</size>
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Wood</name>
+          </script>
+          <ambient>1 1 1 1</ambient>
+        </material>
+      </visual>
+      <!-- CORRIDOR_WALLS[0] = (cx=0.975, cy=2.08, length=1.66, yaw=math.pi / 2) -->
+      <pose frame=''>0.975 2.08 0 0 0 1.5707963267948966</pose>
+    </link>
+    <link name='corridor_wall_2'>
+      <collision name='corridor_wall_2_collision'>
+        <geometry>
+          <box>
+            <size>2.45 0.15 0.5</size>
+          </box>
+        </geometry>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+      </collision>
+      <visual name='corridor_wall_2_visual'>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>2.45 0.15 0.5</size>
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Wood</name>
+          </script>
+          <ambient>1 1 1 1</ambient>
+        </material>
+      </visual>
+      <!-- CORRIDOR_WALLS[1] = (cx=-0.175, cy=1.325, length=2.45, yaw=0.0) -->
+      <pose frame=''>-0.175 1.325 0 0 0 0.0</pose>
+    </link>
+    <link name='corridor_wall_3'>
+      <collision name='corridor_wall_3_collision'>
+        <geometry>
+          <box>
+            <size>2.35 0.15 0.5</size>
+          </box>
+        </geometry>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+      </collision>
+      <visual name='corridor_wall_3_visual'>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>2.35 0.15 0.5</size>
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Wood</name>
+          </script>
+          <ambient>1 1 1 1</ambient>
+        </material>
+      </visual>
+      <!-- CORRIDOR_WALLS[2] = (cx=-1.325, cy=0.225, length=2.35, yaw=math.pi / 2) -->
+      <pose frame=''>-1.325 0.225 0 0 0 1.5707963267948966</pose>
+    </link>
+    <link name='corridor_wall_4'>
+      <collision name='corridor_wall_4_collision'>
+        <geometry>
+          <box>
+            <size>1.66 0.15 0.5</size>
+          </box>
+        </geometry>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+      </collision>
+      <visual name='corridor_wall_4_visual'>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>1.66 0.15 0.5</size>
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Wood</name>
+          </script>
+          <ambient>1 1 1 1</ambient>
+        </material>
+      </visual>
+      <!-- CORRIDOR_WALLS[3] = (cx=-2.08, cy=-0.875, length=1.66, yaw=0.0) -->
+      <pose frame=''>-2.08 -0.875 0 0 0 0.0</pose>
+    </link>
+    <link name='corridor_wall_5'>
+      <collision name='corridor_wall_5_collision'>
+        <geometry>
+          <box>
+            <size>2.66 0.15 0.5</size>
+          </box>
+        </geometry>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+      </collision>
+      <visual name='corridor_wall_5_visual'>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>2.66 0.15 0.5</size>
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Wood</name>
+          </script>
+          <ambient>1 1 1 1</ambient>
+        </material>
+      </visual>
+      <!-- CORRIDOR_WALLS[4] = (cx=1.58, cy=-0.325, length=2.66, yaw=0.0) -->
+      <pose frame=''>1.58 -0.325 0 0 0 0.0</pose>
+    </link>
+    <link name='corridor_wall_6'>
+      <collision name='corridor_wall_6_collision'>
+        <geometry>
+          <box>
+            <size>2.66 0.15 0.5</size>
+          </box>
+        </geometry>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+      </collision>
+      <visual name='corridor_wall_6_visual'>
+        <pose frame=''>0 0 0.25 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>2.66 0.15 0.5</size>
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Wood</name>
+          </script>
+          <ambient>1 1 1 1</ambient>
+        </material>
+      </visual>
+      <!-- CORRIDOR_WALLS[5] = (cx=0.325, cy=-1.58, length=2.66, yaw=math.pi / 2) -->
+      <pose frame=''>0.325 -1.58 0 0 0 1.5707963267948966</pose>
+    </link>
+    <static>1</static>
+  </model>
+</sdf>

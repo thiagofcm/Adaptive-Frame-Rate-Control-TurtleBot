@@ -15,6 +15,7 @@ the LiDAR point cloud.
 Usage:
     python3 make_video.py --eval-dir FixedFPS/eval/fixed_0.2Hz --n-ep 3
     python3 make_video.py --eval-dir FixedFPS/eval/fixed_0.2Hz --n-ep 3 --lidar --fps 20
+    python3 make_video.py --eval-dir FixedFPS/eval/fixed_0.2Hz --n-ep 3 --speed 1   # real time (default is 4x)
 
 --eval-dir is the rate/run folder (whatever record_episode.py's --out-dir
 was), and --n-ep selects episode_%04d underneath it -- the example above
@@ -69,7 +70,7 @@ def load_episode(episode_dir):
 def load_step_log(episode_dir):
     """Load the per-PPO-step log used to color the trajectory by sensing rate.
 
-    The current evaluator writes step.csv; steps.csv is also accepted for
+    AdaptiveFPS/scripts/eval.py writes steps.csv; step.csv is also accepted for
     compatibility with the naming used by the other AdaptiveFPS projects.
     """
     for filename in ("step.csv", "steps.csv"):
@@ -88,12 +89,12 @@ def pick_step_time_column(steps, timebase):
     """Return the step-log time column matching trajectory/LiDAR timebase."""
     if steps is None:
         return None
-    preferred = "sim_time" if timebase == "t_sim" else "wall_time"
-    if preferred in steps.columns and steps[preferred].notna().all():
-        return preferred
-    fallback = "wall_time" if preferred == "sim_time" else "sim_time"
-    if fallback in steps.columns and steps[fallback].notna().all():
-        return fallback
+    # t_sim_s/t_wall_s: current AdaptiveFPS and FixedFPS steps.csv; sim_time/wall_time: older AdaptiveFPS runs.
+    sim_cols, wall_cols = ("t_sim_s", "sim_time"), ("t_wall_s", "wall_time")
+    preferred, fallback = (sim_cols, wall_cols) if timebase == "t_sim" else (wall_cols, sim_cols)
+    for col in preferred + fallback:
+        if col in steps.columns and steps[col].notna().all():
+            return col
     return None
 
 
@@ -199,6 +200,8 @@ def main():
     parser.add_argument("-o", "--output", default=None,
                          help="Output MP4 path (default: inside the episode folder itself)")
     parser.add_argument("--fps", type=int, default=30, help="Output video frame rate")
+    parser.add_argument("--speed", type=float, default=4.0,
+                         help="Playback speed-up relative to episode time (default: 4 -> 4x; 1 = real time)")
     parser.add_argument("--dpi", type=int, default=110)
     parser.add_argument("--lidar", dest="lidar", action="store_true", default=False,
                          help="Overlay LiDAR points (default: off, for a clean navigation view)")
@@ -207,6 +210,8 @@ def main():
     parser.add_argument("--no-obstacles", dest="obstacles", action="store_false", default=True,
                          help="Hide recorded moving-obstacle positions (default: shown)")
     args = parser.parse_args()
+    if args.speed <= 0:
+        sys.exit("--speed must be > 0")
 
     if shutil.which("ffmpeg") is None:
         sys.exit("ffmpeg not found on PATH -- install it (e.g. apt-get install ffmpeg) and retry.")
@@ -257,7 +262,9 @@ def main():
     duration = float(traj_t[-1])
     if len(lidar_t):
         duration = max(duration, float(lidar_t[-1]))
-    num_frames = max(1, int(duration * args.fps) + 1)
+    # Each output frame advances args.speed / args.fps seconds of episode time,
+    # so the video plays args.speed times faster than the episode.
+    num_frames = max(1, int(duration * args.fps / args.speed) + 1)
     frame_times = np.linspace(0, duration, num_frames)
 
     traj_idx = np.searchsorted(traj_t, frame_times, side="right") - 1
@@ -367,7 +374,7 @@ def main():
             current_fps_text = ""
         title.set_text(f"episode {episode_index}   t={t_now:.1f}s "
                        f"({'sim' if timebase == 't_sim' else 'wall'})"
-                       f"{current_fps_text}")
+                       f"{current_fps_text}   [{args.speed:g}x]")
         artists = [trail_line, robot_patch, lidar_scatter, title]
         if fps_scatter is not None:
             artists.append(fps_scatter)
@@ -377,7 +384,8 @@ def main():
     anim = animation.FuncAnimation(fig, update, frames=num_frames, blit=False)
     anim.save(output, fps=args.fps, dpi=args.dpi, writer="ffmpeg")
     plt.close(fig)
-    print(f"wrote {output} ({num_frames} frames, {duration:.1f}s @ {args.fps} fps)")
+    print(f"wrote {output} ({num_frames} frames, {duration:.1f}s episode at {args.speed:g}x "
+          f"-> {num_frames / args.fps:.1f}s video @ {args.fps} fps)")
 
 
 if __name__ == "__main__":

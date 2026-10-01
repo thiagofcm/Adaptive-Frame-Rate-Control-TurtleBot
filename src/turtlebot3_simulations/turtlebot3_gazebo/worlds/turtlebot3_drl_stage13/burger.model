@@ -1,0 +1,123 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <!-- Stage 13: static structure of the corridor_dynamic_chase scene from
+       adaptive_sensor_policy/envs/turtlebot_var_scan_rate.py
+       (OUTER_WALLS + CORRIDOR_WALLS) with the moving obstacles of
+       CORRIDOR_DYNAMIC_CHASE_OBSTACLES: OB1/OB2 ping-pong and OB3 triggered_chase. -->
+  <world name="default">
+
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <scene>
+      <shadows>false</shadows>
+    </scene>
+
+    <gui fullscreen='0'>
+      <camera name='user_camera'>
+        <pose frame=''>0.319654 -0.235002 9.29441 0 1.5138 0.009599</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>perspective</projection_type>
+      </camera>
+    </gui>
+
+    <physics type="ode">
+      <real_time_update_rate>1000.0</real_time_update_rate>
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <ode>
+        <solver>
+          <type>quick</type>
+          <iters>150</iters>
+          <precon_iters>0</precon_iters>
+          <sor>1.400000</sor>
+          <use_dynamic_moi_rescaling>1</use_dynamic_moi_rescaling>
+        </solver>
+        <constraints>
+          <cfm>0.00001</cfm>
+          <erp>0.2</erp>
+          <contact_max_correcting_vel>2000.000000</contact_max_correcting_vel>
+          <contact_surface_layer>0.01000</contact_surface_layer>
+        </constraints>
+      </ode>
+    </physics>
+
+    <include>
+      <pose>0 0 0 0 0 0</pose>
+      <uri>model://turtlebot3_drl_world/outer_walls_large</uri>
+    </include>
+
+    <include>
+      <pose>0 0 0 0 0 0</pose>
+      <uri>model://turtlebot3_drl_world/corridor_walls</uri>
+    </include>
+
+    <!-- Moving obstacles. Wrapper model names end in the obstacle index + 1 and wrap the
+         obstacleN bodies (cylinder r=0.16, p3d -> /obstacle/odom, child frame link_obstacleN),
+         so DRLEnvironment.obstacle_odom_callback maps them to indices 0 and 1.
+         The wrapper <pose> equals the ping-pong start, which is also where /reset_simulation
+         puts the model back. -->
+
+    <!-- OB1: dict(type="ping_pong", start=(1.4, 2.0), end=(2.4, 2.0), speed=0.06) -->
+    <model name="turtlebot3_drl_obstacle1">
+      <pose>1.4 2.0 0 0 0 0</pose>
+      <plugin name="corridor_ob1" filename="libcorridor_obstacle.so">
+        <type>ping_pong</type>
+        <start>1.4 2.0</start>
+        <end>2.4 2.0</end>
+        <speed>0.06</speed>
+      </plugin>
+      <include>
+        <pose>0 0 0 0 0 0</pose>
+        <uri>model://turtlebot3_drl_world/obstacle1</uri>
+      </include>
+    </model>
+
+    <!-- OB2: dict(type="ping_pong", start=(2.4, 1.4), end=(1.4, 1.4), speed=0.06) -->
+    <model name="turtlebot3_drl_obstacle2">
+      <pose>2.4 1.4 0 0 0 0</pose>
+      <plugin name="corridor_ob2" filename="libcorridor_obstacle.so">
+        <type>ping_pong</type>
+        <start>2.4 1.4</start>
+        <end>1.4 1.4</end>
+        <speed>0.06</speed>
+      </plugin>
+      <include>
+        <pose>0 0 0 0 0 0</pose>
+        <uri>model://turtlebot3_drl_world/obstacle2</uri>
+      </include>
+    </model>
+
+    <!-- OB3: CORRIDOR_DYNAMIC_OB3_CHASE = dict(type="triggered_chase", start=(-1.0, -1.0), speed=0.1,
+         chase_duration=CHASE_DURATION_S (10.0), trigger_x=0.2, trigger_direction="decreasing") -->
+    <model name="turtlebot3_drl_obstacle3">
+      <pose>-1.0 -1.0 0 0 0 0</pose>
+      <plugin name="corridor_ob3" filename="libcorridor_obstacle.so">
+        <type>triggered_chase</type>
+        <start>-1.0 -1.0</start>
+        <speed>0.1</speed>
+        <chase_duration>10.0</chase_duration>
+        <trigger_x>0.2</trigger_x>
+        <trigger_direction>decreasing</trigger_direction>
+        <robot_model>turtlebot3_burger</robot_model>
+      </plugin>
+      <include>
+        <pose>0 0 0 0 0 0</pose>
+        <uri>model://turtlebot3_drl_world/obstacle3</uri>
+      </include>
+    </model>
+
+    <include>
+      <!-- Robot reset pose (also the pose Gazebo's /reset_simulation restores to).
+           Matches corridor_dynamic_chase: start (2.5, 2.5), yaw -2.9441970937399127 rad. -->
+      <pose>2.5 2.5 0 0 0 -2.9441970937399127</pose>
+      <uri>model://turtlebot3_burger</uri>
+    </include>
+
+  </world>
+</sdf>

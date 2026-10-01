@@ -34,8 +34,7 @@ from make_video_fps_v2 import rectangle_corners, wall_bounds  # noqa: E402  (sam
 #                     [1.0, 0.3], [1.0, -2.0], [0.3, -1.0],  [0.0, 2.0], [0.0, -1.0], [-1.0, 1.0],
 #                         [-1.0, -1.2], [-2.0, 1.0], [-2.2, 0.0], [-2.0, -2.2], [-2.4, 2.4]]
 
-GOAL_POSE_LIST = [[0.0, 2.0], [0.2, 2.0], [0.3, 2.0], [0.4, 2.0], [0.5, 2.0], [0.6, 2.0], [0.8, 2.0],
-                  [0.0, 2.1], [0.2, 2.2], [0.3, 2.3], [0.4, 2.4], [0.5, 2.5]]
+GOAL_POSE_LIST = [[-1.8, -1.2]]
 
 # eval_adaptive_fps.py's STAGE9_RESET_X/STAGE9_RESET_Y -- the fixed pose
 # reset_simulation() (and reset_on_success) put the robot back at.

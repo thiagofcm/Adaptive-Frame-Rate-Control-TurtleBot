@@ -1,0 +1,2 @@
+run_name,mean_fps,n_episodes,success_rate,mean_episode_return,std_episode_return,mean_n_steps,std_n_steps,mean_final_goal_distance_m,mean_fresh_observations,std_fresh_observations,mean_native_scans_per_fresh_observation
+fixed_10Hz,10.0,3,100.0,1.1165252802272634,0.014099403575947474,271.3333333333333,2.357022603955158,0.19882969133681802,319.6666666666667,0.4714045207910317,4.9937499999999995

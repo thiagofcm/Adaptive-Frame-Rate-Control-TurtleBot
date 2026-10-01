@@ -41,7 +41,7 @@ sleep 2
 # Goals
 tmux new-window -t "$SESSION" -n goals
 tmux send-keys -t "$SESSION:goals" \
-"$setup_cmd && ros2 run turtlebot3_drl gazebo_goals" C-m
+"$setup_cmd && ros2 run turtlebot3_drl gazebo_goals --ros-args -p external_reset:=true" C-m
 
 echo
 echo "AdaptiveFPS PPO training started."

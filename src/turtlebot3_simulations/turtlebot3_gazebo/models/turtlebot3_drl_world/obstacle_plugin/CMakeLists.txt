@@ -53,5 +53,8 @@ target_link_libraries(obstacle11 ${GAZEBO_LIBRARIES})
 add_library(obstacle12 SHARED obstacle12.cc)
 target_link_libraries(obstacle12 ${GAZEBO_LIBRARIES})
 
+add_library(corridor_obstacle SHARED corridor_obstacle.cc)
+target_link_libraries(corridor_obstacle ${GAZEBO_LIBRARIES})
+
 add_library(obstacles SHARED obstacles.cc)
 target_link_libraries(obstacles ${GAZEBO_LIBRARIES})

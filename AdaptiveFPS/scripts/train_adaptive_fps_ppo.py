@@ -4,13 +4,15 @@ AdaptiveFPSEnv.
 
 Ported from the F1TENTH/LunarLander CleanRL-style PPO+LSTM reference
 script. This version restores the reference's recurrent Agent (Linear ->
-Tanh -> LSTM -> actor/critic heads) on top of the already-validated 47-D
-augmented observation (fps_ratio/obs_age_ratio/episode_frame_count_ratio
-appended to the raw 44-D TD3 navigation observation -- see
-AdaptiveFPS/env/adaptive_fps_env.py, not modified here). The frozen TD3
-navigation actor still only ever sees the raw 44-D observation; only the
-PPO agent's input grew to 47-D, and now that input is fed through an LSTM
-instead of a plain feed-forward MLP.
+Tanh -> LSTM -> actor/critic heads) on top of the canonical 43-D sensing
+observation (retained 40-beam LiDAR scan + fps_ratio, obs_age_ratio and
+frame_ratio = episode_scan_count / ADAPTIVE_FRAME_BUDGET -- see
+AdaptiveFPS/env/adaptive_obs.py and adaptive_fps_env.py). The frozen TD3
+navigation actor still only ever sees its raw 44-D observation; the PPO
+agent sees only the 43-D sensing observation (no goal or previous-action
+inputs), fed through an LSTM instead of a plain feed-forward MLP.
+Checkpoints from the former 47-D observation are legacy and cannot be
+resumed.
 
 What's unchanged from the previous (feed-forward) version of this script:
 rollout collection shape, GAE, PPO update's clipping/entropy/value-loss
@@ -112,6 +114,8 @@ from datetime import datetime
 
 sys.path.insert(0, os.environ["DRLNAV_BASE_PATH"])
 from AdaptiveFPS.env.adaptive_fps_env import AdaptiveFPSEnv  # noqa: E402
+from AdaptiveFPS.env.adaptive_obs import (  # noqa: E402
+    ADAPTIVE_FRAME_BUDGET, ADAPTIVE_OBS_DIM, ADAPTIVE_OBS_LAYOUT, check_adaptive_checkpoint)
 
 RUNS_ROOT = "AdaptiveFPS/runs"
 
@@ -193,12 +197,11 @@ class Args:
 def make_env(max_episode_steps):
     """Constructed directly rather than via gym.make(), to avoid
     gym.make()'s default wrapper stack around a real ROS/Gazebo
-    side-effecting env. reset_on_success=True: every episode (success or
-    failure) resets the robot to the fixed reset pose, matching eval.py's
-    behavior -- explicit choice, changes the training curriculum (no more
-    "continue from where it succeeded")."""
+    side-effecting env. Every episode (success or failure) starts from the
+    fixed reset pose: AdaptiveFPSEnv issues one /reset_simulation per episode
+    (gazebo_goals runs with external_reset:=true), same as eval.py."""
     def thunk():
-        env = AdaptiveFPSEnv(reset_on_success=True)
+        env = AdaptiveFPSEnv()
         env = TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
@@ -216,9 +219,9 @@ class Agent(nn.Module):
     lstm_hidden_size), feeding separate actor/critic MLP heads. Ported
     from the F1TENTH/LunarLander reference with no architectural changes.
     obs_dim is inferred from envs.single_observation_space, so this
-    automatically consumes AdaptiveFPSEnv's validated 47-D augmented
-    observation (44-D raw TD3 observation + fps_ratio/obs_age_ratio/
-    episode_frame_count_ratio) without any TurtleBot-specific code here."""
+    automatically consumes AdaptiveFPSEnv's canonical 43-D sensing
+    observation (retained scan + fps_ratio/obs_age_ratio/frame_ratio)
+    without any TurtleBot-specific code here."""
 
     def __init__(self, envs, lstm_hidden_size=64):
         super().__init__()
@@ -361,6 +364,8 @@ def main():
     with open(info_file, "w") as f:
         for key, value in vars(args).items():
             f.write(f"{key}: {value}\n")
+        f.write(f"obs_layout: {ADAPTIVE_OBS_LAYOUT}\n")
+        f.write(f"budget: {ADAPTIVE_FRAME_BUDGET}\n")
         if args.resume_path is not None:
             f.write(f"Resumed from checkpoint: {args.resume_path}\n")
     print(f"Experiment info saved -> {info_file}")
@@ -377,6 +382,15 @@ def main():
 
     envs = gym.vector.SyncVectorEnv([make_env(args.max_episode_steps) for _ in range(args.num_envs)])
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    # Canonical sensing observation and frame budget (AdaptiveFPS/env/adaptive_obs.py), stored in every checkpoint.
+    env_budget = envs.envs[0].unwrapped.budget
+    env_fps_choices = list(envs.envs[0].unwrapped.fps_choices)
+    assert envs.single_observation_space.shape == (ADAPTIVE_OBS_DIM,), \
+        f"expected the canonical {ADAPTIVE_OBS_DIM}-D observation, got {envs.single_observation_space.shape}"
+    assert all(e.unwrapped.budget == ADAPTIVE_FRAME_BUDGET for e in envs.envs), \
+        f"every env must normalise frame_ratio by ADAPTIVE_FRAME_BUDGET={ADAPTIVE_FRAME_BUDGET}"
+    obs_metadata = {"obs_dim": ADAPTIVE_OBS_DIM, "obs_layout": ADAPTIVE_OBS_LAYOUT,
+                    "fps_choices": env_fps_choices, "budget": env_budget}
 
     try:
         agent = Agent(envs, args.lstm_hidden_size).to(device)
@@ -395,6 +409,10 @@ def main():
         start_iteration = 1
         if args.resume_path is not None:
             checkpoint = torch.load(args.resume_path, map_location=device)
+            try:
+                check_adaptive_checkpoint(checkpoint, env_fps_choices, env_budget)
+            except ValueError as exc:
+                raise SystemExit(f"cannot resume from {args.resume_path}:\n  {exc}")
             agent.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             global_step = checkpoint["global_step"]
@@ -519,7 +537,7 @@ def main():
                             mean_nav_reward = episode_nav_reward_sum[i] / episode_nav_reward_count[i] if episode_nav_reward_count[i] > 0 else 0
                             episodic_nav_reward = episode_nav_reward_sum[i]
                             episodic_frame_penalty = episode_frame_penalty_sum[i]
-                            episode_frame_count = infos["episode_frame_count"][i] if "episode_frame_count" in infos else 0
+                            episode_scan_count = infos["episode_scan_count"][i] if "episode_scan_count" in infos else 0
 
                             print(f"global_step={global_step} | return={ep_return:.2f} | steps={ep_length} | mean_fps={mean_fps:.2f}")
                             writer.add_scalar("charts/episodic_return", ep_return, global_step)
@@ -528,7 +546,7 @@ def main():
                             writer.add_scalar("charts/mean_nav_reward", mean_nav_reward, global_step)
                             writer.add_scalar("charts/episodic_nav_reward", episodic_nav_reward, global_step)
                             writer.add_scalar("charts/episodic_frame_penalty", episodic_frame_penalty, global_step)
-                            writer.add_scalar("charts/episode_frame_count", episode_frame_count, global_step)
+                            writer.add_scalar("charts/episode_frame_count", episode_scan_count, global_step)
 
                             episode_fps_sum[i] = 0
                             episode_fps_count[i] = 0
@@ -687,6 +705,7 @@ def main():
                     "iteration": iteration,
                     "next_lstm_state_h": next_lstm_state[0].cpu(),
                     "next_lstm_state_c": next_lstm_state[1].cpu(),
+                    **obs_metadata,
                 }, checkpoint_model_path)
                 print(f"  Checkpoint saved -> {checkpoint_model_path}")
 
@@ -712,6 +731,7 @@ def main():
             "global_step": global_step,
             "next_lstm_state_h": next_lstm_state[0].cpu(),
             "next_lstm_state_c": next_lstm_state[1].cpu(),
+            **obs_metadata,
         }, f"{RUNS_ROOT}/{run_name}/model.pt")
         print(f"Model saved -> {RUNS_ROOT}/{run_name}/model.pt")
     finally:

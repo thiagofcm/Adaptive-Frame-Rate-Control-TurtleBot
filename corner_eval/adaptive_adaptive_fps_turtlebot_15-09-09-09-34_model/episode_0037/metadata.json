@@ -1,0 +1,30 @@
+{
+  "episode": 37,
+  "policy_type": "adaptive",
+  "environment_fps_choices": [
+    0.2,
+    0.5,
+    1.0,
+    5.0,
+    10.0
+  ],
+  "initial_current_fps": 10.0,
+  "initial_obs_interval": 5,
+  "final_current_fps": 0.5,
+  "final_obs_interval": 100,
+  "n_steps": 489,
+  "episode_return": 2.1517081882004754,
+  "fresh_observations": 55,
+  "native_scans": 2899,
+  "outcome": 1,
+  "outcome_str": "SUCCESS",
+  "success": true,
+  "mean_fps": 0.9629629629629629,
+  "causal_ticks": 54,
+  "causal_fps_action_counts": {
+    "1.0": 50,
+    "0.5": 4
+  },
+  "model_path": "AdaptiveFPS/runs/adaptive_fps_turtlebot_15-09-09-09-34/model.pt",
+  "lstm_hidden_size": 64
+}

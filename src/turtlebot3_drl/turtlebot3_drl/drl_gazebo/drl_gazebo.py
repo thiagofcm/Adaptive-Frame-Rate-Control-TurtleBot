@@ -74,6 +74,11 @@ class DRLGazebo(Node):
               f"stage9 training randomization: {ENABLE_STAGE9_TRAINING_RANDOMIZATION}")
         if ENABLE_STAGE9_TRAINING_RANDOMIZATION and STAGE9_TRAINING_SEED is not None:
             random.seed(STAGE9_TRAINING_SEED)
+        # Opt-in: when true, this node never calls /reset_simulation (startup, failures, goal-generation
+        # fallbacks); an external episode manager (AdaptiveFPSEnv) owns every reset. Goal handling is
+        # unchanged. Default false keeps the original behavior.
+        self.external_reset = self.declare_parameter('external_reset', False).value
+        print(f"external_reset: {self.external_reset}")
 
         self.prev_x, self.prev_y = -1, -1
         self.goal_x, self.goal_y = 0.5, 0.0
@@ -107,8 +112,8 @@ class DRLGazebo(Node):
         self.reset_simulation()
         if not self._wait_for_initial_goal_pose_subscribers():
             return
-        if self.stage == 9:
-            # Only Stage 9 is changed: route the very first goal through the
+        if self.stage in (9, 13):
+            # Only Stage 9 (and Stage 13) is changed: route the very first goal through the
             # same deterministic sequence used for every later Stage 9 goal,
             # so episode 1 gets goal_pose_list[0] instead of the hardcoded
             # (0.5, 0.0) placeholder set in __init__().
@@ -231,6 +236,16 @@ class DRLGazebo(Node):
 
 
     def generate_goal_pose(self):
+        if self.stage == 13:
+            # Stage 13 (corridor_dynamic_chase): single fixed goal, same as the
+            # simplified env's STAGE9_GOAL_POSE_LIST. Returns before the
+            # distance-check retry loop below, which a fixed goal can never satisfy.
+            self.prev_x = self.goal_x
+            self.prev_y = self.goal_y
+            self.goal_x, self.goal_y = -1.8, -2.5
+            self.publish_callback()
+            return
+
         if self.stage == 9:
             # Stage 9 always bypasses the distance-check retry loop below
             # entirely (by returning before it), for both its sub-modes.
@@ -248,8 +263,7 @@ class DRLGazebo(Node):
             #                         [-1.0, -1.2], [-2.0, 1.0], [-2.2, 0.0], [-2.0, -2.2], [-2.4, 2.4]]
 
             # My custom goal pose list
-            goal_pose_list = [[0.0, 2.0], [0.2, 2.0], [0.3, 2.0], [0.4, 2.0], [0.5, 2.0], [0.6, 2.0], [0.8, 2.0],
-                  [0.0, 2.1], [0.2, 2.2], [0.3, 2.3], [0.4, 2.4], [0.5, 2.5]]
+            goal_pose_list = [[-1.8, -1.2]]
             self.prev_x = self.goal_x
             self.prev_y = self.goal_y
             if ENABLE_STAGE9_TRAINING_RANDOMIZATION:
@@ -298,6 +312,8 @@ class DRLGazebo(Node):
         self.publish_callback()
 
     def reset_simulation(self):
+        if self.external_reset:
+            return  # resets are owned by the external episode manager (see __init__)
         req = Empty.Request()
         while not self.reset_simulation_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('reset service not available, waiting again...')

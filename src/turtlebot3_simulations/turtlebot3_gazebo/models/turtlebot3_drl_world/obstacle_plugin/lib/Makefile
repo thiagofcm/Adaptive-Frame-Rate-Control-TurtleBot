@@ -111,6 +111,19 @@ depend:
 .PHONY : depend
 
 #=============================================================================
+# Target rules for targets named obstacles
+
+# Build rule for target.
+obstacles: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 obstacles
+.PHONY : obstacles
+
+# fast build rule for target.
+obstacles/fast:
+	$(MAKE) -f CMakeFiles/obstacles.dir/build.make CMakeFiles/obstacles.dir/build
+.PHONY : obstacles/fast
+
+#=============================================================================
 # Target rules for targets named obstacle2
 
 # Build rule for target.
@@ -215,19 +228,6 @@ obstacle7/fast:
 .PHONY : obstacle7/fast
 
 #=============================================================================
-# Target rules for targets named obstacle9
-
-# Build rule for target.
-obstacle9: cmake_check_build_system
-	$(MAKE) -f CMakeFiles/Makefile2 obstacle9
-.PHONY : obstacle9
-
-# fast build rule for target.
-obstacle9/fast:
-	$(MAKE) -f CMakeFiles/obstacle9.dir/build.make CMakeFiles/obstacle9.dir/build
-.PHONY : obstacle9/fast
-
-#=============================================================================
 # Target rules for targets named obstacle4
 
 # Build rule for target.
@@ -267,17 +267,57 @@ obstacle10/fast:
 .PHONY : obstacle10/fast
 
 #=============================================================================
-# Target rules for targets named obstacles
+# Target rules for targets named obstacle9
 
 # Build rule for target.
-obstacles: cmake_check_build_system
-	$(MAKE) -f CMakeFiles/Makefile2 obstacles
-.PHONY : obstacles
+obstacle9: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 obstacle9
+.PHONY : obstacle9
 
 # fast build rule for target.
-obstacles/fast:
-	$(MAKE) -f CMakeFiles/obstacles.dir/build.make CMakeFiles/obstacles.dir/build
-.PHONY : obstacles/fast
+obstacle9/fast:
+	$(MAKE) -f CMakeFiles/obstacle9.dir/build.make CMakeFiles/obstacle9.dir/build
+.PHONY : obstacle9/fast
+
+#=============================================================================
+# Target rules for targets named corridor_obstacle
+
+# Build rule for target.
+corridor_obstacle: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 corridor_obstacle
+.PHONY : corridor_obstacle
+
+# fast build rule for target.
+corridor_obstacle/fast:
+	$(MAKE) -f CMakeFiles/corridor_obstacle.dir/build.make CMakeFiles/corridor_obstacle.dir/build
+.PHONY : corridor_obstacle/fast
+
+corridor_obstacle.o: corridor_obstacle.cc.o
+
+.PHONY : corridor_obstacle.o
+
+# target to build an object file
+corridor_obstacle.cc.o:
+	$(MAKE) -f CMakeFiles/corridor_obstacle.dir/build.make CMakeFiles/corridor_obstacle.dir/corridor_obstacle.cc.o
+.PHONY : corridor_obstacle.cc.o
+
+corridor_obstacle.i: corridor_obstacle.cc.i
+
+.PHONY : corridor_obstacle.i
+
+# target to preprocess a source file
+corridor_obstacle.cc.i:
+	$(MAKE) -f CMakeFiles/corridor_obstacle.dir/build.make CMakeFiles/corridor_obstacle.dir/corridor_obstacle.cc.i
+.PHONY : corridor_obstacle.cc.i
+
+corridor_obstacle.s: corridor_obstacle.cc.s
+
+.PHONY : corridor_obstacle.s
+
+# target to generate assembly for a file
+corridor_obstacle.cc.s:
+	$(MAKE) -f CMakeFiles/corridor_obstacle.dir/build.make CMakeFiles/corridor_obstacle.dir/corridor_obstacle.cc.s
+.PHONY : corridor_obstacle.cc.s
 
 obstacle1.o: obstacle1.cc.o
 
@@ -636,6 +676,7 @@ help:
 	@echo "... all (the default if no target is provided)"
 	@echo "... clean"
 	@echo "... depend"
+	@echo "... obstacles"
 	@echo "... obstacle2"
 	@echo "... obstacle3"
 	@echo "... rebuild_cache"
@@ -646,11 +687,14 @@ help:
 	@echo "... obstacle5"
 	@echo "... obstacle6"
 	@echo "... obstacle7"
-	@echo "... obstacle9"
 	@echo "... obstacle4"
 	@echo "... obstacle12"
 	@echo "... obstacle10"
-	@echo "... obstacles"
+	@echo "... obstacle9"
+	@echo "... corridor_obstacle"
+	@echo "... corridor_obstacle.o"
+	@echo "... corridor_obstacle.i"
+	@echo "... corridor_obstacle.s"
 	@echo "... obstacle1.o"
 	@echo "... obstacle1.i"
 	@echo "... obstacle1.s"

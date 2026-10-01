@@ -1,0 +1,3 @@
+episode,policy_type,fixed_fps,mean_fps,success,outcome,outcome_str,n_steps,episode_return,fresh_observations,native_scans,final_goal_distance_m,final_obs_interval,distance_traveled_m,fresh_observation_ratio,native_scans_per_fresh_observation
+1,fixed,10.0,10.0,True,1,SUCCESS,401,22.658397371768963,405,2022,0.19993176082940664,5,8.151704944931607,0.20029673590504452,4.992592592592593
+2,fixed,10.0,10.0,True,1,SUCCESS,410,22.620405303239835,416,2077,0.19873911038366962,5,8.180524998446025,0.20028887818969668,4.992788461538462
