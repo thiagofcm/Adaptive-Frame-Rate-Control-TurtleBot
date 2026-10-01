@@ -12,21 +12,22 @@
   "initial_obs_interval": 5,
   "final_current_fps": 1.0,
   "final_obs_interval": 50,
-  "n_steps": 208,
-  "episode_return": -14.679488763809205,
-  "fresh_observations": 23,
-  "native_scans": 1056,
-  "outcome": 3,
-  "outcome_str": "COLL_OBST",
+  "n_steps": 141,
+  "episode_return": -15.075000000000001,
+  "fresh_observations": 16,
+  "native_scans": 706,
+  "outcome": 2,
+  "outcome_str": "COLL_WALL",
   "success": false,
   "mean_fps": 1.0,
-  "causal_ticks": 22,
+  "causal_ticks": 15,
   "causal_fps_action_counts": {
-    "1.0": 22
+    "1.0": 15
   },
   "policy_obs_dim": 43,
   "policy_obs_layout": "retained_scan[0:40], fps_ratio, obs_age_ratio, frame_ratio",
   "frame_budget": 450,
+  "frame_cost": 0.005,
   "requested_fixed_fps": 1.0,
   "fixed_action_index": 2
 }

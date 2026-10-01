@@ -15,7 +15,7 @@ set -e
 
 SESSION="eval_stage13_batch"
 WORKSPACE="/home/turtlebot3_drlnav"
-EPISODES="${EPISODES:-2}"
+EPISODES="${EPISODES:-50}"
 EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval_stage13_50ep}"
 
 # Every tmux session the Stage 13 scripts use. Any of them still running would attach a second
@@ -32,19 +32,18 @@ STAGE13_SESSIONS=("$SESSION" "adaptivefps_stage13" "eval_adaptive_fps_stage13")
 
 EVALS=(
     "fps:10"
-    #"fps:5"
-    #"fps:1"
-    #"fps:0.5"
-    #"fps:0.2"
-    #"model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-56_fc_0.0/model.pt"
-    #"model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-57_fc_0.01/model.pt"
-    #"model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-58_fc_0.015/model.pt"
-    #"model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-14-00_fc_0.02/model.pt"
-    # "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-14-01_fc_0.05/model.pt"
-    # "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_27-09-14-05-58_fc_0.0_resume/model.pt"
-    # "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_27-09-14-05-59_fc_0.01_resume/model.pt"
-    #"model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_27-09-14-06-00_fc_0.015_resume/model.pt"
-    # "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_27-09-14-06-02_fc_0.02_resume/model.pt"
+    "fps:5"
+    "fps:1"
+    "fps:0.5"
+    "fps:0.2"
+    "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-56_fc_0.0/model.pt"
+    "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-57_fc_0.01/model.pt"
+    "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-58_fc_0.015/model.pt"
+    "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-14-00_fc_0.02/model.pt"
+    "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-31_fc_0.03/model.pt"
+    "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-32_fc_0.035/model.pt"
+    "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-33_fc_0.04/model.pt"
+    "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-35_fc_0.045/model.pt"
     "model:Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_27-09-14-06-03_fc_0.05_resume/model.pt"
 )
 

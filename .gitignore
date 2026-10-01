@@ -11,6 +11,7 @@ FixedFPS/eval/
 # Generated AdaptiveFPS experiments
 Adaptive_Policies_SimpleEnv/
 AdaptiveFPS/eval/
+AdaptiveFPS/eval_stage13_50ep/
 AdaptiveFPS/runs/
 old_results/
 

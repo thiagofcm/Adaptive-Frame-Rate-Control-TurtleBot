@@ -12,10 +12,10 @@
   "initial_obs_interval": 5,
   "final_current_fps": 1.0,
   "final_obs_interval": 50,
-  "n_steps": 585,
-  "episode_return": -10.962752623558044,
+  "n_steps": 584,
+  "episode_return": -11.463695688247682,
   "fresh_observations": 60,
-  "native_scans": 2946,
+  "native_scans": 2940,
   "outcome": 4,
   "outcome_str": "TIMEOUT",
   "success": false,
@@ -27,6 +27,7 @@
   "policy_obs_dim": 43,
   "policy_obs_layout": "retained_scan[0:40], fps_ratio, obs_age_ratio, frame_ratio",
   "frame_budget": 450,
+  "frame_cost": 0.005,
   "requested_fixed_fps": 1.0,
   "fixed_action_index": 2
 }
