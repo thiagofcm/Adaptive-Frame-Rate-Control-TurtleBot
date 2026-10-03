@@ -8,8 +8,9 @@
 #   EVAL_ROOT=/home/turtlebot3_drlnav/AdaptiveFPS/eval_stage13_other ./run_50_episodes_eval_stage13.sh
 #   FRAME_COST=0.005 BUDGET=450 ./run_50_episodes_eval_stage13.sh   (defaults; BUDGET must match every checkpoint)
 #
-# Results go to $EVAL_ROOT/fixed_<fps>Hz/ and $EVAL_ROOT/adaptive_<run>_<checkpoint>/, with one
-# $EVAL_ROOT/summary.csv comparing them all. Adaptive checkpoints must use the canonical 43-D
+# Results go to $EVAL_ROOT/fixed/fixed_<fps>Hz/ and $EVAL_ROOT/<adaptive group>/<run>_<checkpoint>/ (groups:
+# adaptive_scratch, adaptive_transfer, adaptive_zeroshot, adaptive_unrecorded), with one
+# $EVAL_ROOT/summary.csv comparing them all. Historical results remain in AdaptiveFPS/eval_stage13_50ep/. Adaptive checkpoints must use the canonical 43-D
 # observation (AdaptiveFPS/env/adaptive_obs.py); legacy 47-D checkpoints are rejected by eval.py.
 
 set -e
@@ -17,7 +18,7 @@ set -e
 SESSION="eval_stage13_batch"
 WORKSPACE="/home/turtlebot3_drlnav"
 EPISODES="${EPISODES:-50}"
-EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval_stage13_50ep}"
+EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval/stage13}"
 FRAME_COST="${FRAME_COST:-0.005}"
 BUDGET="${BUDGET:-450}"
 

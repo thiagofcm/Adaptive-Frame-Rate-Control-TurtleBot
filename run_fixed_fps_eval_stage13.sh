@@ -8,8 +8,10 @@ WORKSPACE="/home/turtlebot3_drlnav"
 FPS="${1:-10}"   # must be one of AdaptiveFPSEnv.fps_choices: 0.2 0.5 1 5 10
 EPISODES="${2:-3}"
 # Stage 13 results live apart from the Stage 9 ones in AdaptiveFPS/eval
-# (override per run, e.g. EVAL_ROOT=$WORKSPACE/AdaptiveFPS/eval_stage13_ob12 ./run_fixed_fps_eval_stage13.sh 10 3)
-EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval_stage13}"
+# Results go to $EVAL_ROOT/fixed/fixed_<fps>Hz/ (override per run, e.g.
+# EVAL_ROOT=$WORKSPACE/AdaptiveFPS/eval_stage13_ob12 ./run_fixed_fps_eval_stage13.sh 10 3).
+# Historical results remain in AdaptiveFPS/eval_stage13*/ (flat layout).
+EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval/stage13}"
 FRAME_COST="${FRAME_COST:-0.005}"   # reward penalty per frame-consuming PPO step
 BUDGET="${BUDGET:-450}"             # frame budget (frame_ratio denominator)
 
@@ -53,7 +55,7 @@ echo
 echo "AdaptiveFPS Stage 13 (static corridor) experiment started."
 echo "FPS:      $FPS"
 echo "Episodes: $EPISODES"
-echo "Output:   $EVAL_ROOT/fixed_${FPS}Hz"
+echo "Output:   $EVAL_ROOT/fixed/fixed_${FPS}Hz"
 echo
 echo "Attach with:"
 echo "  tmux attach -t $SESSION"

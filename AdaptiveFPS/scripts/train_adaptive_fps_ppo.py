@@ -83,6 +83,20 @@ Usage (recurrent smoke test):
 --frame-cost and --budget are passed to AdaptiveFPSEnv and stored in every checkpoint (top level and
 args). --budget scales the frame_ratio policy input, so --resume-path requires it to match the
 checkpoint; a stored frame cost must match too.
+
+Initialization (mutually exclusive; see AdaptiveFPS/env/checkpoint_init.py):
+    (neither)                  scratch: freshly initialized Agent
+    --resume-path <ckpt.pt>    continue an interrupted Gazebo run (model, optimizer, global_step,
+                               iteration and LSTM state restored); SimpleEnv checkpoints are rejected
+    --pretrained-path <ckpt>   NEW Gazebo run initialized from a SimpleEnv policy: the complete
+                               model_state_dict (network + LSTM + actor + critic) is loaded strictly;
+                               optimizer, global_step=0, iteration=1, zero LSTM state, rollout,
+                               statistics and run directory all start fresh; Gazebo checkpoints rejected
+Every checkpoint records env_id, gazebo_stage, "init" (how the run's weights were initialized, kept
+across resumes) and "resumed_from" (resume history). The run directory is created only after any
+checkpoint has been validated, as AdaptiveFPS/runs/stage<N>/<scratch|transfer>/adaptive_<scratch|transfer>
+[_resume]_stage<N>_fc<fc>_bud<budget>_<date_time>/ (AdaptiveFPS/env/experiment_layout.py). A startup block
+prints the initialization and experiment settings, taken from the same values saved in checkpoints.
 """
 import os
 os.environ["OMP_NUM_THREADS"]   = "1"
@@ -119,7 +133,11 @@ from datetime import datetime
 sys.path.insert(0, os.environ["DRLNAV_BASE_PATH"])
 from AdaptiveFPS.env.adaptive_fps_env import AdaptiveFPSEnv  # noqa: E402
 from AdaptiveFPS.env.adaptive_obs import (  # noqa: E402
-    ADAPTIVE_FRAME_BUDGET, ADAPTIVE_FRAME_COST, ADAPTIVE_OBS_DIM, ADAPTIVE_OBS_LAYOUT, check_adaptive_checkpoint)
+    ADAPTIVE_FRAME_BUDGET, ADAPTIVE_FRAME_COST, ADAPTIVE_OBS_DIM, ADAPTIVE_OBS_LAYOUT)
+from AdaptiveFPS.env.checkpoint_init import (  # noqa: E402
+    GAZEBO_ENV_ID, load_pretrained_weights, pretrained_init_record, resume_records,
+    validate_pretrained_checkpoint, validate_resume_checkpoint)
+from AdaptiveFPS.env.experiment_layout import experiment_condition, training_run_dir  # noqa: E402
 
 RUNS_ROOT = "AdaptiveFPS/runs"
 
@@ -199,7 +217,9 @@ class Args:
     in practice; sized for TurtleBot Stage 9's much longer episodes
     (tens of thousands of control steps), not F1TENTH's ~220-step laps"""
     resume_path: str = None
-    """path to a checkpoint .pt file to resume training from"""
+    """path to a Gazebo checkpoint .pt file to continue an interrupted run from (excludes --pretrained-path)"""
+    pretrained_path: str = None
+    """path to a SimpleEnv checkpoint .pt file whose complete model weights initialize a NEW run (excludes --resume-path)"""
     checkpoint_interval: int = 10
     """save a checkpoint every N iterations"""
 
@@ -306,6 +326,101 @@ class Agent(nn.Module):
         return action, probs.log_prob(action), probs.entropy(), self.critic(hidden), lstm_state
 
 
+def initialize_training_state(args, agent, optimizer, device, env_fps_choices, env_budget):
+    """Initialize the run as scratch, --resume-path or --pretrained-path (mutually exclusive, checked in main()).
+
+    Returns (global_step, start_iteration, next_lstm_state, init, resumed_from). Only --resume-path restores
+    training state. --pretrained-path loads the complete model weights in place and nothing else, so the
+    optimizer (already built over agent.parameters()) stays stateless, global_step=0, start_iteration=1 and
+    the LSTM state is zero. Raises SystemExit on an invalid checkpoint, before any run directory exists."""
+    lstm_shape = (agent.lstm.num_layers, args.num_envs, agent.lstm.hidden_size)
+    next_lstm_state = (torch.zeros(lstm_shape).to(device), torch.zeros(lstm_shape).to(device))
+
+    if args.resume_path is not None:
+        checkpoint = torch.load(args.resume_path, map_location=device)
+        try:
+            summary = validate_resume_checkpoint(checkpoint, agent, env_fps_choices, env_budget,
+                                                 args.frame_cost, args.num_envs)
+        except ValueError as exc:
+            raise SystemExit(f"cannot resume from {args.resume_path}:\n  {exc}")
+        if summary["frame_cost"] == "not stored":
+            print(f"WARNING: {args.resume_path} stores no frame_cost; resuming with --frame-cost {args.frame_cost}")
+        agent.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        next_lstm_state = (
+            checkpoint["next_lstm_state_h"].to(device),
+            checkpoint["next_lstm_state_c"].to(device),
+        )
+        init, resumed_from = resume_records(os.path.abspath(args.resume_path), checkpoint)
+        print(f"Resumed from checkpoint: {args.resume_path} (iteration {checkpoint['iteration']}, "
+              f"step {checkpoint['global_step']}, init mode {init['mode']})")
+        return checkpoint["global_step"], checkpoint["iteration"] + 1, next_lstm_state, init, resumed_from
+
+    if args.pretrained_path is not None:
+        checkpoint = torch.load(args.pretrained_path, map_location=device)
+        try:
+            summary = validate_pretrained_checkpoint(checkpoint, agent, env_fps_choices, env_budget,
+                                                     args.lstm_hidden_size)
+        except ValueError as exc:
+            raise SystemExit(f"cannot initialize from --pretrained-path {args.pretrained_path}:\n  {exc}")
+        loaded = load_pretrained_weights(agent, checkpoint)
+        assert len(optimizer.state) == 0 and optimizer.param_groups[0]["lr"] == args.learning_rate, \
+            "pretrained initialization must leave the optimizer fresh"
+        if summary["frame_cost"] == "not stored":
+            print(f"WARNING: pretrained source stores no frame_cost; training with --frame-cost {args.frame_cost}")
+        elif float(summary["frame_cost"]) != float(args.frame_cost):
+            print(f"WARNING: pretrained source was trained with frame cost {summary['frame_cost']}, but this run "
+                  f"uses --frame-cost {args.frame_cost} (the transferred critic estimates the source objective)")
+        init = pretrained_init_record(os.path.abspath(args.pretrained_path), checkpoint, summary, loaded)
+        print(f"Initialized from pretrained {summary['env_id']} checkpoint: {args.pretrained_path} "
+              f"(loaded {', '.join(loaded)}; source frame cost {summary['frame_cost']}, budget {summary['budget']}"
+              f"{'' if summary['budget_stored'] else ' assumed'}). Optimizer, global_step, iteration and LSTM "
+              f"state start fresh.")
+        return 0, 1, next_lstm_state, init, []
+
+    return 0, 1, next_lstm_state, {"mode": "scratch"}, []
+
+
+def startup_lines(args, init, resumed_from, gazebo_stage, run_dir):
+    """Startup summary of initialization and experiment settings. Source values come from `init`, the same
+    record saved in every checkpoint and info_settings.txt."""
+    rows = []
+    if args.resume_path is not None:
+        last = resumed_from[-1]
+        rows += [("initialization mode", f"resume of a {experiment_condition(init)} run (--resume-path)"),
+                 ("resume checkpoint", last["path"]),
+                 ("  sha256", last["sha256"]),
+                 ("  resumes after", f"iteration {last['iteration']}, global_step {last['global_step']}")]
+    else:
+        rows.append(("initialization mode", experiment_condition(init)))
+    if init.get("mode") == "pretrained":
+        budget_note = "stored in checkpoint" if init["source_budget_stored"] else "assumed: not stored in checkpoint"
+        rows += [("pretrained checkpoint", init["source_path"]),
+                 ("  sha256", init["source_sha256"]),
+                 ("  source environment", init["source_env_id"]),
+                 ("  source scene", init["source_scene"]),
+                 ("  source frame cost", init["source_frame_cost"]),
+                 ("  source budget", f"{init['source_budget']} ({budget_note})"),
+                 ("  source progress", f"global_step {init['source_global_step']}, iteration {init['source_iteration']}"),
+                 ("  loaded components", ", ".join(init["loaded_components"]))]
+    elif init.get("mode") == "scratch":
+        rows.append(("pretrained checkpoint", "none"))
+    else:
+        rows.append(("pretrained checkpoint", "not recorded (checkpoint predates initialization provenance)"))
+    rows += [("gazebo stage", gazebo_stage),
+             ("gazebo frame cost", args.frame_cost),
+             ("gazebo budget", args.budget),
+             ("total timesteps", args.total_timesteps),
+             ("rollout steps", f"{args.num_steps} x {args.num_envs} env -> {args.num_iterations} iterations"),
+             ("seed", args.seed),
+             ("checkpoint interval", f"every {args.checkpoint_interval} iterations (+ final model.pt)"),
+             ("run directory", run_dir)]
+    width = max(len(label) for label, _ in rows)
+    rule = "=" * 72
+    return [rule, "AdaptiveFPS training configuration", rule] + \
+        [f"{label:<{width}} : {value}" for label, value in rows] + [rule]
+
+
 def load_args(args_class):
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--config", type=str, default=None)
@@ -326,6 +441,9 @@ def load_args(args_class):
 
 def main():
     args = load_args(Args)
+    if args.resume_path is not None and args.pretrained_path is not None:
+        raise SystemExit("--resume-path (continue a Gazebo run) and --pretrained-path (start a new run from "
+                         "SimpleEnv weights) are mutually exclusive")
     args.batch_size = int(args.num_envs * args.num_steps)
 
     # Recurrent minibatching (see class Agent / update loop below) assigns
@@ -349,36 +467,6 @@ def main():
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = max(1, args.total_timesteps // args.batch_size)
 
-    date_str = datetime.now().strftime("%d-%m-%H-%M-%S")
-    run_name = f"adaptive_fps_turtlebot_{date_str}"
-
-    if args.track:
-        import wandb
-
-        wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
-            sync_tensorboard=True,
-            config=vars(args),
-            name=run_name,
-            monitor_gym=True,
-            save_code=True,
-        )
-    writer = SummaryWriter(f"{RUNS_ROOT}/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
-    info_file = os.path.join(f"{RUNS_ROOT}/{run_name}", "info_settings.txt")
-    os.makedirs(f"{RUNS_ROOT}/{run_name}", exist_ok=True)
-    with open(info_file, "w") as f:
-        for key, value in vars(args).items():
-            f.write(f"{key}: {value}\n")
-        f.write(f"obs_layout: {ADAPTIVE_OBS_LAYOUT}\n")
-        if args.resume_path is not None:
-            f.write(f"Resumed from checkpoint: {args.resume_path}\n")
-    print(f"Experiment info saved -> {info_file}")
-
     # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -401,46 +489,68 @@ def main():
     assert all(e.unwrapped.budget == args.budget and e.unwrapped.frame_cost == args.frame_cost for e in envs.envs), \
         f"every env must use --budget {args.budget} and --frame-cost {args.frame_cost}"
     print(f"Experiment settings: frame_cost={args.frame_cost} budget={args.budget}")
-    obs_metadata = {"obs_dim": ADAPTIVE_OBS_DIM, "obs_layout": ADAPTIVE_OBS_LAYOUT,
-                    "fps_choices": env_fps_choices, "budget": env_budget, "frame_cost": args.frame_cost}
+    gazebo_stage = envs.envs[0].unwrapped.stage
 
+    writer = None
     try:
         agent = Agent(envs, args.lstm_hidden_size).to(device)
-        next_lstm_state = (
-            torch.zeros(agent.lstm.num_layers, args.num_envs, agent.lstm.hidden_size).to(device),
-            torch.zeros(agent.lstm.num_layers, args.num_envs, agent.lstm.hidden_size).to(device),
+        optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+        global_step, start_iteration, next_lstm_state, init, resumed_from = initialize_training_state(
+            args, agent, optimizer, device, env_fps_choices, env_budget)
+        checkpoint_metadata = {"env_id": GAZEBO_ENV_ID, "gazebo_stage": gazebo_stage,
+                               "obs_dim": ADAPTIVE_OBS_DIM, "obs_layout": ADAPTIVE_OBS_LAYOUT,
+                               "fps_choices": env_fps_choices, "budget": env_budget, "frame_cost": args.frame_cost,
+                               "init": init, "resumed_from": resumed_from}
+
+        # Run directory, TensorBoard and info_settings.txt are created only now, after any --resume-path /
+        # --pretrained-path checkpoint was validated, so a rejected start leaves no empty run directory.
+        run_dir = training_run_dir(RUNS_ROOT, init, args.resume_path is not None, gazebo_stage,
+                                   args.frame_cost, args.budget, datetime.now())
+        run_name = os.path.basename(run_dir)
+        if args.track:
+            import wandb
+
+            wandb.init(
+                project=args.wandb_project_name,
+                entity=args.wandb_entity,
+                sync_tensorboard=True,
+                config=vars(args),
+                name=run_name,
+                monitor_gym=True,
+                save_code=True,
+            )
+        writer = SummaryWriter(run_dir)
+        writer.add_text(
+            "hyperparameters",
+            "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
         )
+        provenance = {"env_id": GAZEBO_ENV_ID, "gazebo_stage": gazebo_stage,
+                      **{f"init_{key}": value for key, value in init.items()}}
+        for i, record in enumerate(resumed_from):
+            provenance[f"resumed_from_{i}"] = (f"{record['path']} (sha256 {record['sha256']}, "
+                                              f"global_step {record['global_step']}, iteration {record['iteration']})")
+        writer.add_text(
+            "initialization",
+            "|field|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in provenance.items()])),
+        )
+        info_file = os.path.join(run_dir, "info_settings.txt")
+        os.makedirs(run_dir, exist_ok=True)
+        with open(info_file, "w") as f:
+            for key, value in vars(args).items():
+                f.write(f"{key}: {value}\n")
+            f.write(f"obs_layout: {ADAPTIVE_OBS_LAYOUT}\n")
+            for key, value in provenance.items():
+                f.write(f"{key}: {value}\n")
+            if args.resume_path is not None:
+                f.write(f"Resumed from checkpoint: {args.resume_path}\n")
+        print(f"Experiment info saved -> {info_file}")
+        print("\n".join(startup_lines(args, init, resumed_from, gazebo_stage, run_dir)), flush=True)
+
         print(f"[recurrent-debug] Observation shape: {envs.single_observation_space.shape}")
         print(f"[recurrent-debug] LSTM input size: {agent.lstm.input_size}")
         print(f"[recurrent-debug] LSTM hidden size: {agent.lstm.hidden_size}")
         print(f"[recurrent-debug] LSTM state h shape: {tuple(next_lstm_state[0].shape)}")
         print(f"[recurrent-debug] LSTM state c shape: {tuple(next_lstm_state[1].shape)}")
-
-        optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
-
-        start_iteration = 1
-        if args.resume_path is not None:
-            checkpoint = torch.load(args.resume_path, map_location=device)
-            try:
-                summary = check_adaptive_checkpoint(checkpoint, env_fps_choices, env_budget)
-            except ValueError as exc:
-                raise SystemExit(f"cannot resume from {args.resume_path}:\n  {exc}")
-            if summary["frame_cost"] == "not stored":
-                print(f"WARNING: {args.resume_path} stores no frame_cost; resuming with --frame-cost {args.frame_cost}")
-            elif float(summary["frame_cost"]) != float(args.frame_cost):
-                raise SystemExit(f"cannot resume from {args.resume_path}:\n  checkpoint was trained with frame cost "
-                                 f"{summary['frame_cost']}, but --frame-cost is {args.frame_cost}")
-            agent.load_state_dict(checkpoint["model_state_dict"])
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            global_step = checkpoint["global_step"]
-            start_iteration = checkpoint["iteration"] + 1
-            next_lstm_state = (
-                checkpoint["next_lstm_state_h"].to(device),
-                checkpoint["next_lstm_state_c"].to(device),
-            )
-            print(f"Resumed from checkpoint: {args.resume_path} (iteration {checkpoint['iteration']}, step {global_step})")
-        else:
-            global_step = 0
 
         # ALGO Logic: Storage setup
         obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -467,6 +577,19 @@ def main():
         next_obs = torch.Tensor(next_obs).to(device)
         next_done = torch.zeros(args.num_envs).to(device)
 
+        # One-time record of the policy at the first observation, before any update (lets a pretrained run be
+        # checked against its source policy offline). No sampling, so the RNG stream is untouched.
+        with torch.no_grad():
+            hidden, _ = agent.get_states(next_obs, next_lstm_state, next_done)
+            initial_probs = torch.softmax(agent.actor(hidden), dim=-1)
+            initial_value = agent.critic(hidden)
+        torch.save({"init_mode": init["mode"], "obs": next_obs.cpu(), "done": next_done.cpu(),
+                    "lstm_state_h": next_lstm_state[0].cpu(), "lstm_state_c": next_lstm_state[1].cpu(),
+                    "probs": initial_probs.cpu(), "value": initial_value.cpu()},
+                   f"{run_dir}/initial_policy_check.pt")
+        print(f"[init-debug] first-step policy ({init['mode']}): probs {initial_probs.cpu().numpy().round(4).tolist()} "
+              f"value {initial_value.item():.4f}")
+
         # Chosen FPS / reward-decomposition diagnostics, accumulated per-env across an episode
         episode_fps_sum = np.zeros(args.num_envs)
         episode_fps_count = np.zeros(args.num_envs)
@@ -474,6 +597,7 @@ def main():
         episode_nav_reward_count = np.zeros(args.num_envs)
         episode_frame_penalty_sum = np.zeros(args.num_envs)
 
+        iteration = start_iteration - 1   # last completed iteration (saved in the final model.pt)
         for iteration in range(start_iteration, args.num_iterations + 1):
             initial_lstm_state = (next_lstm_state[0].clone(), next_lstm_state[1].clone())
             if args.anneal_lr:
@@ -711,7 +835,7 @@ def main():
 
             # -- Checkpoint saving --
             if iteration % args.checkpoint_interval == 0:
-                checkpoint_path = f"{RUNS_ROOT}/{run_name}/ckpts/timestep_{global_step}_iterations_{iteration}"
+                checkpoint_path = f"{run_dir}/ckpts/timestep_{global_step}_iterations_{iteration}"
                 os.makedirs(checkpoint_path, exist_ok=True)
                 checkpoint_model_path = f"{checkpoint_path}/ckpt_{global_step}_iterations_{iteration}.pt"
                 torch.save({
@@ -722,9 +846,10 @@ def main():
                     "iteration": iteration,
                     "next_lstm_state_h": next_lstm_state[0].cpu(),
                     "next_lstm_state_c": next_lstm_state[1].cpu(),
-                    **obs_metadata,
+                    **checkpoint_metadata,
                 }, checkpoint_model_path)
-                print(f"  Checkpoint saved -> {checkpoint_model_path}")
+                print(f"[checkpoint] iteration {iteration}/{args.num_iterations} global_step {global_step} "
+                      f"-> {checkpoint_model_path}", flush=True)
 
             y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
             var_y = np.var(y_true)
@@ -746,14 +871,17 @@ def main():
             "optimizer_state_dict": optimizer.state_dict(),
             "args": vars(args),
             "global_step": global_step,
+            "iteration": iteration,
             "next_lstm_state_h": next_lstm_state[0].cpu(),
             "next_lstm_state_c": next_lstm_state[1].cpu(),
-            **obs_metadata,
-        }, f"{RUNS_ROOT}/{run_name}/model.pt")
-        print(f"Model saved -> {RUNS_ROOT}/{run_name}/model.pt")
+            **checkpoint_metadata,
+        }, f"{run_dir}/model.pt")
+        print(f"[checkpoint] final model.pt iteration {iteration} global_step {global_step} -> {run_dir}/model.pt",
+              flush=True)
     finally:
         envs.close()
-        writer.close()
+        if writer is not None:
+            writer.close()
 
 
 if __name__ == "__main__":

@@ -11,7 +11,11 @@ The sensing policy sees 43 values, the same definition as the simplified env
 The frame budget is a per-run experiment setting (train_adaptive_fps_ppo.py / eval.py --budget), but it is
 part of the observation definition: a policy must be run with the budget it was trained with. The frame cost
 is a reward-only setting and is recorded, not enforced. Checkpoints that predate the setting (SimpleEnv
-models and earlier Gazebo runs) store no budget and are treated as ADAPTIVE_FRAME_BUDGET.
+models and earlier Gazebo runs) store no budget and are treated as ADAPTIVE_FRAME_BUDGET (450, the verified
+SimpleEnv configuration).
+
+ADAPTIVE_FRAME_COST (0.0) is only the Python-side default used when --frame-cost is not given; the launch
+scripts pass their own FRAME_COST (default 0.005), and experiments pass it explicitly.
 
 The frozen TD3 navigator keeps its own 44-D state; nothing here touches it. Checkpoints trained on the
 former 47-D Gazebo observation (44-D TD3 state + 3 features) are legacy and are rejected, never converted.
@@ -20,7 +24,7 @@ No ROS imports, so this module can be used and tested offline.
 """
 
 ADAPTIVE_FRAME_BUDGET = 450   # default frame_ratio denominator (simplified env default); assumed for checkpoints storing none
-ADAPTIVE_FRAME_COST = 0.0   # default per-frame reward penalty
+ADAPTIVE_FRAME_COST = 0.0     # default per-frame reward penalty when --frame-cost is not given
 ADAPTIVE_OBS_DIM = 43
 ADAPTIVE_OBS_LAYOUT = "retained_scan[0:40], fps_ratio, obs_age_ratio, frame_ratio"
 LEGACY_GAZEBO_OBS_DIM = 47
@@ -46,7 +50,7 @@ def check_adaptive_checkpoint(checkpoint, env_fps_choices, env_budget):
         raise ValueError("checkpoint has no model_state_dict['network.0.weight'] -- not an adaptive-policy checkpoint")
     input_dim = int(state_dict["network.0.weight"].shape[1])
     args = checkpoint.get("args") or {}
-    env_id = args.get("env_id", "unknown") if isinstance(args, dict) else "unknown"
+    env_id = checkpoint.get("env_id") or (args.get("env_id", "unknown") if isinstance(args, dict) else "unknown")
     scene = args.get("scene", "unknown") if isinstance(args, dict) else "unknown"
 
     if input_dim == LEGACY_GAZEBO_OBS_DIM:
@@ -60,6 +64,10 @@ def check_adaptive_checkpoint(checkpoint, env_fps_choices, env_budget):
     stored_obs_dim = _stored(checkpoint, "obs_dim")
     if stored_obs_dim is not None and int(stored_obs_dim) != ADAPTIVE_OBS_DIM:
         raise ValueError(f"checkpoint records obs_dim={stored_obs_dim}, expected {ADAPTIVE_OBS_DIM}")
+
+    stored_layout = _stored(checkpoint, "obs_layout")
+    if stored_layout is not None and stored_layout != ADAPTIVE_OBS_LAYOUT:
+        raise ValueError(f"checkpoint records obs_layout {stored_layout!r}, expected {ADAPTIVE_OBS_LAYOUT!r}")
 
     stored_fps = _stored(checkpoint, "fps_choices")
     if stored_fps is not None and [float(f) for f in stored_fps] != [float(f) for f in env_fps_choices]:

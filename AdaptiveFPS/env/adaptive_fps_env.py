@@ -59,7 +59,8 @@ class AdaptiveFPSEnv(gymnasium.Env):
     def __init__(self, frame_cost=ADAPTIVE_FRAME_COST, budget=ADAPTIVE_FRAME_BUDGET):
         """frame_cost: reward penalty per PPO step that consumes a fresh scan.
         budget: frame_ratio denominator (episode_scan_count / budget) -- part of the policy observation.
-        Both are experiment settings owned by the trainer/evaluator CLI; defaults are the legacy values."""
+        Both are experiment settings owned by the trainer/evaluator CLI; defaults are ADAPTIVE_FRAME_COST (0.0)
+        and ADAPTIVE_FRAME_BUDGET (450) from adaptive_obs.py."""
         super().__init__()
         if not frame_cost >= 0.0:
             raise ValueError(f"frame_cost must be >= 0, got {frame_cost}")
@@ -117,6 +118,8 @@ class AdaptiveFPSEnv(gymnasium.Env):
         self.frame_cost = frame_cost
         self._max_obs_interval = PPO_RATE_HZ / (min(self.fps_choices))
         self.budget = budget
+        # Gazebo stage written by the launch file (/tmp/drlnav_current_stage.txt), recorded in checkpoints
+        self.stage = getattr(util, "stage", None)
 
     def _load_navigation_model(self):
         """Load the frozen TD3 navigation controller;

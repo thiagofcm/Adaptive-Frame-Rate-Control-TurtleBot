@@ -20,9 +20,15 @@ AdaptiveFPSEnv or train_adaptive_fps_ppo.py.
 Gazebo, environment_gated.py, and gazebo_goals must already be running
 (launched separately by the bash/tmux script) before this is started.
 
---frame-cost and --budget configure the env (defaults 0.005 / 450, the legacy values). The budget scales
+--frame-cost and --budget configure the env (Python defaults 0.0 / 450 from adaptive_obs.py; the launch
+scripts pass FRAME_COST, default 0.005). The budget scales
 the frame_ratio policy input, so a --model checkpoint must have been trained with the same budget. The
 frame cost only affects the reported reward; the checkpoint's training frame cost is recorded alongside.
+
+Output layout (AdaptiveFPS/env/experiment_layout.py): <eval-root>/<group>/<run>/ with group fixed,
+adaptive_scratch, adaptive_transfer (Gazebo-trained, from the checkpoint's init provenance), adaptive_zeroshot
+(SimpleEnv policy) or adaptive_unrecorded (Gazebo checkpoint without provenance); default eval-root
+AdaptiveFPS/eval/stage<N>. summary.csv at <eval-root> covers grouped runs and flat (historical) run folders.
 
 Usage:
     python3 AdaptiveFPS/scripts/eval.py --fps 5 --episodes 20 --frame-cost 0.005 --budget 450
@@ -47,6 +53,8 @@ sys.path.insert(0, os.environ["DRLNAV_BASE_PATH"])
 from AdaptiveFPS.env.adaptive_fps_env import AdaptiveFPSEnv  # noqa: E402
 from AdaptiveFPS.env.adaptive_obs import (  # noqa: E402
     ADAPTIVE_FRAME_BUDGET, ADAPTIVE_FRAME_COST, ADAPTIVE_OBS_DIM, ADAPTIVE_OBS_LAYOUT, check_adaptive_checkpoint)
+from AdaptiveFPS.env.checkpoint_init import checkpoint_source_env  # noqa: E402
+from AdaptiveFPS.env.experiment_layout import default_eval_root, eval_group  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.environ["DRLNAV_BASE_PATH"], "tools", "episode_recorder"))
 from record_episode import load_world_geometry  # noqa: E402  (reused, not re-derived --
@@ -449,14 +457,17 @@ def build_metadata(env, args, action_index, episode_data, model_path=None, lstm_
             metadata["checkpoint_budget"] = checkpoint_summary["budget"]
             metadata["checkpoint_budget_stored"] = checkpoint_summary["budget_stored"]
             metadata["checkpoint_frame_cost"] = checkpoint_summary["frame_cost"]
+            metadata["checkpoint_gazebo_stage"] = checkpoint_summary["gazebo_stage"]
+            metadata["checkpoint_init"] = checkpoint_summary["init"]
+            metadata["checkpoint_resumed_from"] = checkpoint_summary["resumed_from"]
     return metadata
 
 
 def summarize_results(eval_root):
-    """Read every */episodes.csv under AdaptiveFPS/eval/ -- fixed_*Hz/ today,
-    any other evaluated-config subdirectory later -- and combine them into
-    one comparison table: one row per run (run_name = the directory
-    containing that run's episodes.csv), with mean/std stats computed
+    """Read every episodes.csv one level (historical flat layout: <eval_root>/<run>/) or two levels
+    (grouped layout: <eval_root>/<group>/<run>/) below eval_root and combine them into
+    one comparison table: one row per run (run_name = that run's directory relative to eval_root, i.e.
+    "<run>" or "<group>/<run>"), with mean/std stats computed
     across every evaluated episode for that run.
 
     Registered to run on interpreter exit (atexit) so it always reflects
@@ -464,7 +475,8 @@ def summarize_results(eval_root):
     was interrupted -- same pattern as evaluate_adaptive_fps.py's own
     summarize_results()/summary.csv for the F1TENTH/Lunar Lander studies.
     """
-    episode_csv_paths = sorted(glob.glob(os.path.join(eval_root, "*", "episodes.csv")))
+    episode_csv_paths = sorted(glob.glob(os.path.join(eval_root, "*", "episodes.csv")) +
+                               glob.glob(os.path.join(eval_root, "*", "*", "episodes.csv")))
     if not episode_csv_paths:
         return
 
@@ -475,7 +487,7 @@ def summarize_results(eval_root):
         if not rows:
             continue
 
-        run_name = os.path.basename(os.path.dirname(path))
+        run_name = os.path.relpath(os.path.dirname(path), eval_root)
 
         # mean_fps (not fixed_fps) is used here so this works for both
         # policy types: fixed_fps is blank for adaptive-mode rows, while
@@ -593,7 +605,7 @@ def main():
                               "(argmax) action selection is unaffected -- diagnostic only, off by default.")
     parser.add_argument("--eval-root", type=str, default=None,
                          help="directory that receives the fixed_*Hz/ or adaptive_*/ run folders and "
-                              "summary.csv (default: $DRLNAV_BASE_PATH/AdaptiveFPS/eval). Use a separate "
+                              "summary.csv (default: $DRLNAV_BASE_PATH/AdaptiveFPS/eval/stage<N>). Use a separate "
                               "root per stage so results from different worlds never mix.")
     parser.add_argument("--frame-cost", type=float, default=ADAPTIVE_FRAME_COST,
                          help="reward penalty per PPO step that consumes a fresh scan (default: %(default)s)")
@@ -613,7 +625,7 @@ def main():
             raise SystemExit(f"AdaptiveFPSEnv provides a {obs_dim}-D observation; expected {ADAPTIVE_OBS_DIM}-D")
         print(f"Experiment settings: frame_cost={env.frame_cost} budget={env.budget}")
         eval_root = (os.path.abspath(args.eval_root) if args.eval_root is not None
-                     else os.path.join(os.environ["DRLNAV_BASE_PATH"], "AdaptiveFPS", "eval"))
+                     else default_eval_root(os.environ["DRLNAV_BASE_PATH"], env.stage))
 
         action_index = None
         model = None
@@ -625,7 +637,7 @@ def main():
                 raise SystemExit(f"--fps must be one of {env.fps_choices}, got {args.fps}")
             action_index = env.fps_choices.index(args.fps)
 
-            out_dir = os.path.join(eval_root, f"fixed_{fmt_hz(args.fps)}Hz")
+            out_dir = os.path.join(eval_root, "fixed", f"fixed_{fmt_hz(args.fps)}Hz")
             print("AdaptiveFPSEnv fixed-policy evaluation")
             print(f"  requested fps: {args.fps}")
             print(f"  action index:  {action_index} (fps_choices={env.fps_choices})")
@@ -637,6 +649,16 @@ def main():
                 checkpoint_summary = check_adaptive_checkpoint(checkpoint, env.fps_choices, env.budget)
             except ValueError as exc:
                 raise SystemExit(f"cannot evaluate {args.model}:\n  {exc}")
+            # Initialization provenance written by train_adaptive_fps_ppo.py (absent from SimpleEnv/older checkpoints).
+            # A scene name only exists for SimpleEnv checkpoints; Gazebo checkpoints are identified by gazebo_stage.
+            source_env = checkpoint_source_env(checkpoint)
+            if source_env == "gazebo":
+                checkpoint_summary["scene"] = "not applicable"
+                checkpoint_summary["gazebo_stage"] = checkpoint.get("gazebo_stage", "not recorded")
+            else:
+                checkpoint_summary["gazebo_stage"] = "not applicable"
+            checkpoint_summary["init"] = checkpoint.get("init", "not recorded")
+            checkpoint_summary["resumed_from"] = checkpoint.get("resumed_from", "not recorded")
             n_actions = env.action_space.n
             lstm_hidden_size = checkpoint.get("args", {}).get("lstm_hidden_size", 64)
 
@@ -652,14 +674,21 @@ def main():
             # into the same output directory.
             run_dir_name = os.path.basename(os.path.dirname(os.path.abspath(args.model)))
             checkpoint_basename = os.path.splitext(os.path.basename(args.model))[0]
-            out_dir = os.path.join(eval_root, f"adaptive_{run_dir_name}_{checkpoint_basename}")
+            group = eval_group(source_env, checkpoint_summary["init"] if isinstance(checkpoint_summary["init"], dict) else None)
+            out_dir = os.path.join(eval_root, group, f"{run_dir_name}_{checkpoint_basename}")
             print("AdaptiveFPSEnv adaptive (recurrent PPO) evaluation")
             print(f"  loaded model:     {args.model}")
             print(f"  obs_dim:          {obs_dim} ({ADAPTIVE_OBS_LAYOUT})")
             print(f"  frame budget:     {env.budget} (checkpoint: {checkpoint_summary['budget']}"
                   f"{'' if checkpoint_summary['budget_stored'] else ', not stored -> legacy default'})")
             print(f"  frame cost:       {env.frame_cost} (checkpoint trained with: {checkpoint_summary['frame_cost']})")
-            print(f"  trained on:       env_id={checkpoint_summary['env_id']} scene={checkpoint_summary['scene']}")
+            trained_on = (f"gazebo_stage={checkpoint_summary['gazebo_stage']}" if source_env == "gazebo"
+                          else f"scene={checkpoint_summary['scene']}")
+            print(f"  trained on:       env_id={checkpoint_summary['env_id']} {trained_on}")
+            print(f"  output group:     {group}")
+            init = checkpoint_summary["init"]
+            print(f"  initialization:   {init if not isinstance(init, dict) else init.get('mode')}"
+                  f"{' from ' + str(init.get('source_path')) if isinstance(init, dict) and 'source_path' in init else ''}")
             print(f"  n_actions:        {n_actions} (fps_choices={env.fps_choices})")
             print(f"  lstm_hidden_size: {lstm_hidden_size}")
             print(f"  diagnose_probs:   {args.diagnose_probs}")
