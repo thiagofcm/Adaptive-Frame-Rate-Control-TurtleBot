@@ -112,8 +112,8 @@ class DRLGazebo(Node):
         self.reset_simulation()
         if not self._wait_for_initial_goal_pose_subscribers():
             return
-        if self.stage in (9, 13):
-            # Only Stage 9 (and Stage 13) is changed: route the very first goal through the
+        if self.stage in (9, 13, 14):
+            # Only Stage 9 (and Stage 13/14) is changed: route the very first goal through the
             # same deterministic sequence used for every later Stage 9 goal,
             # so episode 1 gets goal_pose_list[0] instead of the hardcoded
             # (0.5, 0.0) placeholder set in __init__().
@@ -236,8 +236,8 @@ class DRLGazebo(Node):
 
 
     def generate_goal_pose(self):
-        if self.stage == 13:
-            # Stage 13 (corridor_dynamic_chase): single fixed goal, same as the
+        if self.stage in (13, 14):
+            # Stage 13 (corridor_dynamic_chase) and Stage 14 (same scene, randomized OB1/OB2): single fixed goal, same as the
             # simplified env's STAGE9_GOAL_POSE_LIST. Returns before the
             # distance-check retry loop below, which a fixed goal can never satisfy.
             self.prev_x = self.goal_x

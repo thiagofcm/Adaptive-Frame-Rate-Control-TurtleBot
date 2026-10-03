@@ -124,6 +124,19 @@ obstacles/fast:
 .PHONY : obstacles/fast
 
 #=============================================================================
+# Target rules for targets named corridor_random_obstacle
+
+# Build rule for target.
+corridor_random_obstacle: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 corridor_random_obstacle
+.PHONY : corridor_random_obstacle
+
+# fast build rule for target.
+corridor_random_obstacle/fast:
+	$(MAKE) -f CMakeFiles/corridor_random_obstacle.dir/build.make CMakeFiles/corridor_random_obstacle.dir/build
+.PHONY : corridor_random_obstacle/fast
+
+#=============================================================================
 # Target rules for targets named obstacle2
 
 # Build rule for target.
@@ -318,6 +331,33 @@ corridor_obstacle.s: corridor_obstacle.cc.s
 corridor_obstacle.cc.s:
 	$(MAKE) -f CMakeFiles/corridor_obstacle.dir/build.make CMakeFiles/corridor_obstacle.dir/corridor_obstacle.cc.s
 .PHONY : corridor_obstacle.cc.s
+
+corridor_random_obstacle.o: corridor_random_obstacle.cc.o
+
+.PHONY : corridor_random_obstacle.o
+
+# target to build an object file
+corridor_random_obstacle.cc.o:
+	$(MAKE) -f CMakeFiles/corridor_random_obstacle.dir/build.make CMakeFiles/corridor_random_obstacle.dir/corridor_random_obstacle.cc.o
+.PHONY : corridor_random_obstacle.cc.o
+
+corridor_random_obstacle.i: corridor_random_obstacle.cc.i
+
+.PHONY : corridor_random_obstacle.i
+
+# target to preprocess a source file
+corridor_random_obstacle.cc.i:
+	$(MAKE) -f CMakeFiles/corridor_random_obstacle.dir/build.make CMakeFiles/corridor_random_obstacle.dir/corridor_random_obstacle.cc.i
+.PHONY : corridor_random_obstacle.cc.i
+
+corridor_random_obstacle.s: corridor_random_obstacle.cc.s
+
+.PHONY : corridor_random_obstacle.s
+
+# target to generate assembly for a file
+corridor_random_obstacle.cc.s:
+	$(MAKE) -f CMakeFiles/corridor_random_obstacle.dir/build.make CMakeFiles/corridor_random_obstacle.dir/corridor_random_obstacle.cc.s
+.PHONY : corridor_random_obstacle.cc.s
 
 obstacle1.o: obstacle1.cc.o
 
@@ -677,6 +717,7 @@ help:
 	@echo "... clean"
 	@echo "... depend"
 	@echo "... obstacles"
+	@echo "... corridor_random_obstacle"
 	@echo "... obstacle2"
 	@echo "... obstacle3"
 	@echo "... rebuild_cache"
@@ -695,6 +736,9 @@ help:
 	@echo "... corridor_obstacle.o"
 	@echo "... corridor_obstacle.i"
 	@echo "... corridor_obstacle.s"
+	@echo "... corridor_random_obstacle.o"
+	@echo "... corridor_random_obstacle.i"
+	@echo "... corridor_random_obstacle.s"
 	@echo "... obstacle1.o"
 	@echo "... obstacle1.i"
 	@echo "... obstacle1.s"
