@@ -1,0 +1,33 @@
+{
+  "episode": 22,
+  "policy_type": "fixed",
+  "environment_fps_choices": [
+    0.2,
+    0.5,
+    1.0,
+    5.0,
+    10.0
+  ],
+  "initial_current_fps": 10.0,
+  "initial_obs_interval": 5,
+  "final_current_fps": 0.2,
+  "final_obs_interval": 250,
+  "n_steps": 102,
+  "episode_return": -15.0,
+  "fresh_observations": 4,
+  "native_scans": 506,
+  "outcome": 2,
+  "outcome_str": "COLL_WALL",
+  "success": false,
+  "mean_fps": 0.20000000000000004,
+  "causal_ticks": 3,
+  "causal_fps_action_counts": {
+    "0.2": 3
+  },
+  "policy_obs_dim": 43,
+  "policy_obs_layout": "retained_scan[0:40], fps_ratio, obs_age_ratio, frame_ratio",
+  "frame_budget": 450,
+  "frame_cost": 0.0,
+  "requested_fixed_fps": 0.2,
+  "fixed_action_index": 0
+}

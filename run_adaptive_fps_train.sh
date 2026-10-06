@@ -7,6 +7,8 @@ WORKSPACE="/home/turtlebot3_drlnav"
 
 TOTAL_TIMESTEPS="${1:-20000000}"
 NUM_STEPS="${2:-2048}"
+FRAME_COST="${3:-0.005}"   # reward penalty per frame-consuming PPO step
+BUDGET="${4:-450}"         # frame budget: frame_ratio = episode_scan_count / BUDGET (a policy input)
 
 setup_cmd="cd $WORKSPACE && source /opt/ros/foxy/setup.bash && source install/setup.bash && export TURTLEBOT3_MODEL=burger"
 
@@ -29,7 +31,7 @@ sleep 3
 # PPO trainer
 tmux new-window -t "$SESSION" -n trainer
 tmux send-keys -t "$SESSION:trainer" \
-"$setup_cmd && python3 AdaptiveFPS/scripts/train_adaptive_fps_ppo.py --total-timesteps $TOTAL_TIMESTEPS --num-steps $NUM_STEPS " C-m
+"$setup_cmd && python3 AdaptiveFPS/scripts/train_adaptive_fps_ppo.py --total-timesteps $TOTAL_TIMESTEPS --num-steps $NUM_STEPS --frame-cost $FRAME_COST --budget $BUDGET" C-m
 
 # --resume-path AdaptiveFPS/runs/adaptive_fps_turtlebot_09-09-14-19-39/ckpts/timestep_245760_iterations_120/ckpt_245760_iterations_120.pt 
 
@@ -47,6 +49,8 @@ echo
 echo "AdaptiveFPS PPO training started."
 echo "Total timesteps: $TOTAL_TIMESTEPS"
 echo "Rollout steps:   $NUM_STEPS"
+echo "Frame cost:      $FRAME_COST"
+echo "Budget:          $BUDGET"
 echo
 echo "Attach with:"
 echo "  tmux attach -t $SESSION"

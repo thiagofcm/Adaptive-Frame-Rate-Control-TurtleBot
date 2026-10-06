@@ -14,6 +14,13 @@ EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval_stage14}"
 # same seed gives every rate the same obstacle realization in episode 1, 2, ...
 OBSTACLE_SEED="${OBSTACLE_SEED:-1}"
 OBSTACLE_LOG="${OBSTACLE_LOG:-}"
+FRAME_COST="${FRAME_COST:-0.005}"   # reward penalty per frame-consuming PPO step
+BUDGET="${BUDGET:-450}"             # frame budget (frame_ratio denominator)
+# ros2 launch rejects an empty "obstacle_log:=", so the argument is only passed when a log is requested.
+LAUNCH_ARGS="obstacle_seed:=$OBSTACLE_SEED"
+if [ -n "$OBSTACLE_LOG" ]; then
+    LAUNCH_ARGS="$LAUNCH_ARGS obstacle_log:=$OBSTACLE_LOG"
+fi
 
 setup_cmd="cd $WORKSPACE && source /opt/ros/foxy/setup.bash && source install/setup.bash && export TURTLEBOT3_MODEL=burger"
 
@@ -22,7 +29,7 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 # Gazebo
 tmux new-session -d -s "$SESSION" -n gazebo
 tmux send-keys -t "$SESSION:gazebo" \
-"$setup_cmd && ros2 launch turtlebot3_gazebo turtlebot3_drl_stage14.launch.py obstacle_seed:=$OBSTACLE_SEED obstacle_log:=$OBSTACLE_LOG" C-m
+"$setup_cmd && ros2 launch turtlebot3_gazebo turtlebot3_drl_stage14.launch.py $LAUNCH_ARGS" C-m
 
 sleep 5
 
@@ -36,7 +43,7 @@ sleep 3
 # Evaluator
 tmux new-window -t "$SESSION" -n evaluator
 tmux send-keys -t "$SESSION:evaluator" \
-"$setup_cmd && python3 AdaptiveFPS/scripts/eval.py --fps $FPS --episodes $EPISODES --eval-root $EVAL_ROOT" C-m
+"$setup_cmd && python3 AdaptiveFPS/scripts/eval.py --fps $FPS --episodes $EPISODES --eval-root $EVAL_ROOT --frame-cost $FRAME_COST --budget $BUDGET" C-m
 
 # gazebo_goals now waits internally (drl_gazebo.py's
 # _wait_for_initial_goal_pose_subscribers()) for all 3 required /goal_pose

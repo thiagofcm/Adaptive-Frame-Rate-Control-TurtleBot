@@ -1,7 +1,6 @@
 // random_ping_pong motion of adaptive_sensor_policy/envs/turtlebot_var_scan_rate.py
-// (_reset_random_ping_pong, _rpp_sample_target, _advance_random_ping_pong), with no Gazebo dependency so the
-// same code runs in the corridor_random_obstacle plugin (Stage 14) and in the offline trace harness
-// (tools/stage14/random_ping_pong_trace.cc).
+// (_reset_random_ping_pong, _rpp_sample_target, _advance_random_ping_pong), with no Gazebo dependency.
+// Used by the corridor_random_obstacle plugin (Stage 14).
 //
 // Path coordinate s in [0, L] (metres from `start`), direction +1 toward `end` / -1 toward `start`.
 // At every Reset: s0 ~ U(0, L), dir ~ {-1, +1}, first target uniform in the part of the reversal region

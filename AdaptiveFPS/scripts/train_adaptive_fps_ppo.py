@@ -6,7 +6,7 @@ Ported from the F1TENTH/LunarLander CleanRL-style PPO+LSTM reference
 script. This version restores the reference's recurrent Agent (Linear ->
 Tanh -> LSTM -> actor/critic heads) on top of the canonical 43-D sensing
 observation (retained 40-beam LiDAR scan + fps_ratio, obs_age_ratio and
-frame_ratio = episode_scan_count / ADAPTIVE_FRAME_BUDGET -- see
+frame_ratio = episode_scan_count / --budget -- see
 AdaptiveFPS/env/adaptive_obs.py and adaptive_fps_env.py). The frozen TD3
 navigation actor still only ever sees its raw 44-D observation; the PPO
 agent sees only the 43-D sensing observation (no goal or previous-action
@@ -78,7 +78,16 @@ reset()/step().
 
 Usage (recurrent smoke test):
     python3 AdaptiveFPS/scripts/train_adaptive_fps_ppo.py \\
-        --total-timesteps 8192 --num-steps 2048
+        --total-timesteps 8192 --num-steps 2048 --frame-cost 0.005 --budget 450
+
+--frame-cost and --budget (defaults 0.0 / 450, from adaptive_obs.py) are passed to AdaptiveFPSEnv and
+stored in every checkpoint (top level and args). --budget scales the frame_ratio policy input, so
+--resume-path requires it to match the checkpoint; a stored frame cost must match too.
+
+--resume-path continues a run from a ckpts/ checkpoint or a final model.pt (both hold the same training
+state: model, optimizer, global_step, iteration, LSTM state). The checkpoint must also match --num-steps and
+--num-envs. --total-timesteps is the OVERALL training target, not the number of additional steps: a
+checkpoint at ~1M steps resumed with --total-timesteps 2000000 trains until ~2M.
 """
 import os
 os.environ["OMP_NUM_THREADS"]   = "1"
@@ -114,8 +123,10 @@ from datetime import datetime
 
 sys.path.insert(0, os.environ["DRLNAV_BASE_PATH"])
 from AdaptiveFPS.env.adaptive_fps_env import AdaptiveFPSEnv  # noqa: E402
+from turtlebot3_drl.common import utilities as util  # noqa: E402
 from AdaptiveFPS.env.adaptive_obs import (  # noqa: E402
-    ADAPTIVE_FRAME_BUDGET, ADAPTIVE_OBS_DIM, ADAPTIVE_OBS_LAYOUT, check_adaptive_checkpoint)
+    ADAPTIVE_FRAME_BUDGET, ADAPTIVE_FRAME_COST, ADAPTIVE_OBS_DIM, ADAPTIVE_OBS_LAYOUT, check_adaptive_checkpoint,
+    check_resume_checkpoint)
 
 RUNS_ROOT = "AdaptiveFPS/runs"
 
@@ -137,9 +148,17 @@ class Args:
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
 
+    # Experiment (environment objective / observation) settings, passed to AdaptiveFPSEnv
+    frame_cost: float = ADAPTIVE_FRAME_COST
+    """reward penalty per PPO step that consumes a fresh scan"""
+    budget: int = ADAPTIVE_FRAME_BUDGET
+    """frame budget: frame_ratio = episode_scan_count / budget (a policy input; must match on resume)"""
+
     # Algorithm specific arguments
     total_timesteps: int = 256
-    """total timesteps of the experiment -- small default: this is an integration smoke test, not a real run"""
+    """total timesteps of the experiment -- small default: this is an integration smoke test, not a real run.
+    With --resume-path this is still the overall target, not additional steps (it must exceed the
+    checkpoint's global_step): a ~1M-step checkpoint with --total-timesteps 2000000 trains until ~2M"""
     learning_rate: float = 3.0e-4
     """the learning rate of the optimizer"""
     num_envs: int = 1
@@ -182,6 +201,8 @@ class Args:
     """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
+    scene: str = ""
+    """the Gazebo scene, e.g. stage14 (filled in runtime from the launched stage; names the run's subfolder)"""
 
     max_episode_steps: int = 100_000
     """TimeLimit wrapper cutoff -- defensive only, AdaptiveFPSEnv already
@@ -189,19 +210,19 @@ class Args:
     in practice; sized for TurtleBot Stage 9's much longer episodes
     (tens of thousands of control steps), not F1TENTH's ~220-step laps"""
     resume_path: str = None
-    """path to a checkpoint .pt file to resume training from"""
+    """path to a checkpoint .pt file (ckpts/ checkpoint or final model.pt) to resume training from"""
     checkpoint_interval: int = 10
     """save a checkpoint every N iterations"""
 
 
-def make_env(max_episode_steps):
+def make_env(max_episode_steps, frame_cost, budget):
     """Constructed directly rather than via gym.make(), to avoid
     gym.make()'s default wrapper stack around a real ROS/Gazebo
     side-effecting env. Every episode (success or failure) starts from the
     fixed reset pose: AdaptiveFPSEnv issues one /reset_simulation per episode
     (gazebo_goals runs with external_reset:=true), same as eval.py."""
     def thunk():
-        env = AdaptiveFPSEnv()
+        env = AdaptiveFPSEnv(frame_cost=frame_cost, budget=budget)
         env = TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
@@ -340,7 +361,10 @@ def main():
     args.num_iterations = max(1, args.total_timesteps // args.batch_size)
 
     date_str = datetime.now().strftime("%d-%m-%H-%M-%S")
-    run_name = f"adaptive_fps_turtlebot_{date_str}"
+    # AdaptiveFPS/runs/<scene>/adaptive_fps_turtlebot_<date>_fc_<frame cost>_<scratch|resume>
+    args.scene = f"stage{util.stage}"
+    init_mode = "resume" if args.resume_path is not None else "scratch"
+    run_name = f"{args.scene}/adaptive_fps_turtlebot_{date_str}_fc_{args.frame_cost}_{init_mode}"
 
     if args.track:
         import wandb
@@ -365,7 +389,7 @@ def main():
         for key, value in vars(args).items():
             f.write(f"{key}: {value}\n")
         f.write(f"obs_layout: {ADAPTIVE_OBS_LAYOUT}\n")
-        f.write(f"budget: {ADAPTIVE_FRAME_BUDGET}\n")
+        f.write(f"init_mode: {init_mode}\n")
         if args.resume_path is not None:
             f.write(f"Resumed from checkpoint: {args.resume_path}\n")
     print(f"Experiment info saved -> {info_file}")
@@ -380,17 +404,20 @@ def main():
 
     assert args.num_envs == 1, "only num_envs=1 (single Gazebo instance) is supported in this version"
 
-    envs = gym.vector.SyncVectorEnv([make_env(args.max_episode_steps) for _ in range(args.num_envs)])
+    envs = gym.vector.SyncVectorEnv([make_env(args.max_episode_steps, args.frame_cost, args.budget)
+                                     for _ in range(args.num_envs)])
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
-    # Canonical sensing observation and frame budget (AdaptiveFPS/env/adaptive_obs.py), stored in every checkpoint.
+    # Canonical sensing observation (AdaptiveFPS/env/adaptive_obs.py) plus this run's frame budget and frame
+    # cost, stored in every checkpoint.
     env_budget = envs.envs[0].unwrapped.budget
     env_fps_choices = list(envs.envs[0].unwrapped.fps_choices)
     assert envs.single_observation_space.shape == (ADAPTIVE_OBS_DIM,), \
         f"expected the canonical {ADAPTIVE_OBS_DIM}-D observation, got {envs.single_observation_space.shape}"
-    assert all(e.unwrapped.budget == ADAPTIVE_FRAME_BUDGET for e in envs.envs), \
-        f"every env must normalise frame_ratio by ADAPTIVE_FRAME_BUDGET={ADAPTIVE_FRAME_BUDGET}"
+    assert all(e.unwrapped.budget == args.budget and e.unwrapped.frame_cost == args.frame_cost for e in envs.envs), \
+        f"every env must use --budget {args.budget} and --frame-cost {args.frame_cost}"
+    print(f"Experiment settings: frame_cost={args.frame_cost} budget={args.budget}")
     obs_metadata = {"obs_dim": ADAPTIVE_OBS_DIM, "obs_layout": ADAPTIVE_OBS_LAYOUT,
-                    "fps_choices": env_fps_choices, "budget": env_budget}
+                    "fps_choices": env_fps_choices, "budget": env_budget, "frame_cost": args.frame_cost}
 
     try:
         agent = Agent(envs, args.lstm_hidden_size).to(device)
@@ -410,7 +437,19 @@ def main():
         if args.resume_path is not None:
             checkpoint = torch.load(args.resume_path, map_location=device)
             try:
-                check_adaptive_checkpoint(checkpoint, env_fps_choices, env_budget)
+                summary = check_adaptive_checkpoint(checkpoint, env_fps_choices, env_budget)
+            except ValueError as exc:
+                raise SystemExit(f"cannot resume from {args.resume_path}:\n  {exc}")
+            if summary["frame_cost"] == "not stored":
+                print(f"WARNING: {args.resume_path} stores no frame_cost; resuming with --frame-cost {args.frame_cost}")
+            elif float(summary["frame_cost"]) != float(args.frame_cost):
+                raise SystemExit(f"cannot resume from {args.resume_path}:\n  checkpoint was trained with frame cost "
+                                 f"{summary['frame_cost']}, but --frame-cost is {args.frame_cost}")
+            # Strict: complete training state, same --num-steps/--num-envs, and --total-timesteps (the
+            # overall target, not additional steps) beyond the checkpoint's global_step.
+            try:
+                check_resume_checkpoint(checkpoint, args.num_envs, args.num_steps, args.lstm_hidden_size,
+                                        args.total_timesteps)
             except ValueError as exc:
                 raise SystemExit(f"cannot resume from {args.resume_path}:\n  {exc}")
             agent.load_state_dict(checkpoint["model_state_dict"])
@@ -424,6 +463,22 @@ def main():
             print(f"Resumed from checkpoint: {args.resume_path} (iteration {checkpoint['iteration']}, step {global_step})")
         else:
             global_step = 0
+        # Last completed iteration; the loop below overwrites it. Saved in every checkpoint.
+        iteration = start_iteration - 1
+
+        def training_state():
+            """Checkpoint contents, shared by the periodic ckpts/ checkpoints and the final model.pt so
+            both can be resumed with --resume-path."""
+            return {
+                "model_state_dict": agent.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "args": vars(args),
+                "global_step": global_step,
+                "iteration": iteration,
+                "next_lstm_state_h": next_lstm_state[0].cpu(),
+                "next_lstm_state_c": next_lstm_state[1].cpu(),
+                **obs_metadata,
+            }
 
         # ALGO Logic: Storage setup
         obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -697,16 +752,7 @@ def main():
                 checkpoint_path = f"{RUNS_ROOT}/{run_name}/ckpts/timestep_{global_step}_iterations_{iteration}"
                 os.makedirs(checkpoint_path, exist_ok=True)
                 checkpoint_model_path = f"{checkpoint_path}/ckpt_{global_step}_iterations_{iteration}.pt"
-                torch.save({
-                    "model_state_dict": agent.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "args": vars(args),
-                    "global_step": global_step,
-                    "iteration": iteration,
-                    "next_lstm_state_h": next_lstm_state[0].cpu(),
-                    "next_lstm_state_c": next_lstm_state[1].cpu(),
-                    **obs_metadata,
-                }, checkpoint_model_path)
+                torch.save(training_state(), checkpoint_model_path)
                 print(f"  Checkpoint saved -> {checkpoint_model_path}")
 
             y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
@@ -724,15 +770,7 @@ def main():
             print(f"iteration={iteration}/{args.num_iterations} global_step={global_step} SPS:", int(global_step / (time.time() - start_time)))
             writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        torch.save({
-            "model_state_dict": agent.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "args": vars(args),
-            "global_step": global_step,
-            "next_lstm_state_h": next_lstm_state[0].cpu(),
-            "next_lstm_state_c": next_lstm_state[1].cpu(),
-            **obs_metadata,
-        }, f"{RUNS_ROOT}/{run_name}/model.pt")
+        torch.save(training_state(), f"{RUNS_ROOT}/{run_name}/model.pt")
         print(f"Model saved -> {RUNS_ROOT}/{run_name}/model.pt")
     finally:
         envs.close()

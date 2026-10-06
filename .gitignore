@@ -25,6 +25,17 @@ __pycache__/
 
 # models
 *.pt
+!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-56_fc_0.0/model.pt
+!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-57_fc_0.01/model.pt
+!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-58_fc_0.015/model.pt
+!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-14-00_fc_0.02/model.pt
+!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-14-01_fc_0.05/model.pt
+!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-31_fc_0.03/model.pt
+!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-32_fc_0.035/model.pt
+!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-33_fc_0.04/model.pt
+!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-35_fc_0.045/model.pt
+!Adaptive_Policy_TransferLearning/models/adaptive_transfer_resume_stage13_fc0.035_bud450_2026-10-03_15-34-16/model.pt
+!AdaptiveFPS/runs/adaptive_fps_turtlebot_03-10-22-18-31/model.pt
 
 # TensorBoard event files
 events.out.tfevents.*

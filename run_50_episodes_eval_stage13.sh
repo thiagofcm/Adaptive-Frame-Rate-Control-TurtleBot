@@ -6,6 +6,7 @@
 #   ./run_50_episodes_eval_stage13.sh
 #   EPISODES=10 ./run_50_episodes_eval_stage13.sh
 #   EVAL_ROOT=/home/turtlebot3_drlnav/AdaptiveFPS/eval_stage13_other ./run_50_episodes_eval_stage13.sh
+#   FRAME_COST=0.005 BUDGET=450 ./run_50_episodes_eval_stage13.sh   (defaults; BUDGET must match every checkpoint)
 #
 # Results go to $EVAL_ROOT/fixed_<fps>Hz/ and $EVAL_ROOT/adaptive_<run>_<checkpoint>/, with one
 # $EVAL_ROOT/summary.csv comparing them all. Adaptive checkpoints must use the canonical 43-D
@@ -17,6 +18,8 @@ SESSION="eval_stage13_batch"
 WORKSPACE="/home/turtlebot3_drlnav"
 EPISODES="${EPISODES:-50}"
 EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval_stage13_50ep}"
+FRAME_COST="${FRAME_COST:-0.005}"
+BUDGET="${BUDGET:-450}"
 
 # Every tmux session the Stage 13 scripts use. Any of them still running would attach a second
 # environment/goals node to the same Gazebo world and corrupt the results.
@@ -96,7 +99,9 @@ run_eval() {
         EVAL_CMD="python3 AdaptiveFPS/scripts/eval.py \
             --fps $VALUE \
             --episodes $EPISODES \
-            --eval-root $EVAL_ROOT"
+            --eval-root $EVAL_ROOT \
+            --frame-cost $FRAME_COST \
+            --budget $BUDGET"
     elif [[ "$TYPE" == "model" ]]; then
         case "$VALUE" in
             /*) MODEL_PATH="$VALUE" ;;
@@ -110,6 +115,8 @@ run_eval() {
             --model $MODEL_PATH \
             --episodes $EPISODES \
             --eval-root $EVAL_ROOT \
+            --frame-cost $FRAME_COST \
+            --budget $BUDGET \
             --diagnose-probs"
     else
         echo "ERROR: Unknown evaluation type '$TYPE'"

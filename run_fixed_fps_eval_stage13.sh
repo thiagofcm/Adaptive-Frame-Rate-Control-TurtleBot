@@ -10,6 +10,8 @@ EPISODES="${2:-3}"
 # Stage 13 results live apart from the Stage 9 ones in AdaptiveFPS/eval
 # (override per run, e.g. EVAL_ROOT=$WORKSPACE/AdaptiveFPS/eval_stage13_ob12 ./run_fixed_fps_eval_stage13.sh 10 3)
 EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval_stage13}"
+FRAME_COST="${FRAME_COST:-0.005}"   # reward penalty per frame-consuming PPO step
+BUDGET="${BUDGET:-450}"             # frame budget (frame_ratio denominator)
 
 setup_cmd="cd $WORKSPACE && source /opt/ros/foxy/setup.bash && source install/setup.bash && export TURTLEBOT3_MODEL=burger"
 
@@ -32,7 +34,7 @@ sleep 3
 # Evaluator
 tmux new-window -t "$SESSION" -n evaluator
 tmux send-keys -t "$SESSION:evaluator" \
-"$setup_cmd && python3 AdaptiveFPS/scripts/eval.py --fps $FPS --episodes $EPISODES --eval-root $EVAL_ROOT" C-m
+"$setup_cmd && python3 AdaptiveFPS/scripts/eval.py --fps $FPS --episodes $EPISODES --eval-root $EVAL_ROOT --frame-cost $FRAME_COST --budget $BUDGET" C-m
 
 # gazebo_goals now waits internally (drl_gazebo.py's
 # _wait_for_initial_goal_pose_subscribers()) for all 3 required /goal_pose

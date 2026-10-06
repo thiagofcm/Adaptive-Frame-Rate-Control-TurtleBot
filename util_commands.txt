@@ -25,3 +25,14 @@ turtlebot3_drl_obstacle3	(2, -2)	libobstacle9.so
 turtlebot3_drl_obstacle4	(-2, 2)	libobstacle10.so
 turtlebot3_drl_obstacle5	(0, -2)	libobstacle11.so
 turtlebot3_drl_obstacle6	(0, 2)	libobstacle12.so
+
+TO clean everything:
+checling:
+tmux kill-session -t eval_stage14_batch
+ps aux | grep -E "gzserver|gzclient" | grep -v grep
+ps aux | grep -E "fixed_sensing|adaptive_fps|train_adaptive|turtlebot3" | grep -v grep
+
+kill:
+tmux kill-session -t eval_stage14_batch
+pkill -f gzclient
+pkill -f gzserver
