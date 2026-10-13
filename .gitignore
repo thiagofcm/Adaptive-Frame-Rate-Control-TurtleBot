@@ -44,12 +44,16 @@ __pycache__/
 !/AdaptiveFPS/runs/stage14/adaptive_fps_turtlebot_09-10-14-41-18_fc_0.03_resume/model.pt
 
 # Adaptive FPS model trained using Transfer Learning from Simplified Env to Gazebo for 2M ts at stage 14
-!AdaptiveFPS/runs/stage14/transfer/
-AdaptiveFPS/runs/stage14/transfer/*
-!AdaptiveFPS/runs/stage14/transfer/adaptive_transfer_resume_stage14_fc0.01_bud450_2026-10-13_03-17-20/
-!AdaptiveFPS/runs/stage14/transfer/adaptive_transfer_resume_stage14_fc0.03_bud450_2026-10-07_21-13-16/
-!AdaptiveFPS/runs/stage14/transfer/adaptive_transfer_resume_stage14_fc0.01_bud450_2026-10-13_03-17-20/model.pt
-!AdaptiveFPS/runs/stage14/transfer/adaptive_transfer_resume_stage14_fc0.03_bud450_2026-10-07_21-13-16/model.pt
+Adaptive_Policy_TransferLearning/*
+!Adaptive_Policy_TransferLearning/models
+Adaptive_Policy_TransferLearning/models/*
+!Adaptive_Policy_TransferLearning/models/stage14/
+Adaptive_Policy_TransferLearning/models/stage14/*
+!Adaptive_Policy_TransferLearning/models/stage14/adaptive_transfer_resume_stage14_fc0.01_bud450_2026-10-13_03-17-20/
+!Adaptive_Policy_TransferLearning/models/stage14/adaptive_transfer_resume_stage14_fc0.01_bud450_2026-10-13_03-17-20/model.pt
+
+!Adaptive_Policy_TransferLearning/models/stage14/adaptive_transfer_resume_stage14_fc0.03_bud450_2026-10-07_21-13-16
+!Adaptive_Policy_TransferLearning/models/stage14/adaptive_transfer_resume_stage14_fc0.03_bud450_2026-10-07_21-13-16/model.pt
 
 # Evaluation results
 AdaptiveFPS/eval_stage13_50ep
