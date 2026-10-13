@@ -5,15 +5,17 @@ install/
 log/
 tmux*
 
-# Generated FixedFPS experiments
-FixedFPS/eval/
+# All generated ckpts
+ckpts/
+
+# TensorBoard event files
+events.out.tfevents.*
 
 # Generated AdaptiveFPS experiments
-Adaptive_Policies_SimpleEnv/
-AdaptiveFPS/eval/
-AdaptiveFPS/eval_stage13_50ep/
-AdaptiveFPS/runs/
 old_results/
+
+# Generated FixedFPS experiments
+FixedFPS/eval/
 
 # Generated artifacts
 *.npz
@@ -25,17 +27,29 @@ __pycache__/
 
 # models
 *.pt
-!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-56_fc_0.0/model.pt
-!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-57_fc_0.01/model.pt
-!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-13-58_fc_0.015/model.pt
-!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-14-00_fc_0.02/model.pt
-!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_26-09-16-14-01_fc_0.05/model.pt
-!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-31_fc_0.03/model.pt
-!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-32_fc_0.035/model.pt
-!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-33_fc_0.04/model.pt
-!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase/adaptive_fps_28-09-11-41-35_fc_0.045/model.pt
-!Adaptive_Policy_TransferLearning/models/adaptive_transfer_resume_stage13_fc0.035_bud450_2026-10-03_15-34-16/model.pt
-!AdaptiveFPS/runs/adaptive_fps_turtlebot_03-10-22-18-31/model.pt
 
-# TensorBoard event files
-events.out.tfevents.*
+# Include Models
+# Adaptive FPS model trained on Simplified Env for 200M ts at stage 14
+!Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase_random/adaptive_fps_02-10-15-49-38_fc_0.01/model.pt
+
+# Adaptive FPS model trained on Gazebo from scratch for 5M ts at stage 14
+# Ignore all runs
+/AdaptiveFPS/runs/*
+# Allow Stage 14
+!/AdaptiveFPS/runs/stage14/
+# Ignore everything inside Stage 14
+/AdaptiveFPS/runs/stage14/*
+# Allow the specific training run
+!/AdaptiveFPS/runs/stage14/adaptive_fps_turtlebot_09-10-14-41-18_fc_0.03_resume/
+!/AdaptiveFPS/runs/stage14/adaptive_fps_turtlebot_09-10-14-41-18_fc_0.03_resume/model.pt
+
+# Adaptive FPS model trained using Transfer Learning from Simplified Env to Gazebo for 2M ts at stage 14
+!AdaptiveFPS/runs/stage14/transfer/
+AdaptiveFPS/runs/stage14/transfer/*
+!AdaptiveFPS/runs/stage14/transfer/adaptive_transfer_resume_stage14_fc0.01_bud450_2026-10-13_03-17-20/
+!AdaptiveFPS/runs/stage14/transfer/adaptive_transfer_resume_stage14_fc0.03_bud450_2026-10-07_21-13-16/
+!AdaptiveFPS/runs/stage14/transfer/adaptive_transfer_resume_stage14_fc0.01_bud450_2026-10-13_03-17-20/model.pt
+!AdaptiveFPS/runs/stage14/transfer/adaptive_transfer_resume_stage14_fc0.03_bud450_2026-10-07_21-13-16/model.pt
+
+# Evaluation results
+AdaptiveFPS/eval_stage13_50ep
