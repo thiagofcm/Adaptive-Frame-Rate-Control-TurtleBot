@@ -1,0 +1,2 @@
+model,model_type,pct_frames_low,pct_frames_low_std,pct_frames_moderate,pct_frames_moderate_std,pct_frames_high,pct_frames_high_std,n_frames_low,n_frames_low_std,n_frames_moderate,n_frames_moderate_std,n_frames_high,n_frames_high_std,pct_time_low,pct_time_low_std,pct_time_moderate,pct_time_moderate_std,pct_time_high,pct_time_high_std,success_rate
+adaptive_transfer_resume_stage14_fc0.03_bud450_2026-10-07_21-13-16_model,transfer,34.4963,9.7496,43.1867,10.7585,22.3170,10.8050,36.6383,11.9044,44.7872,9.8465,25.4043,17.2383,46.8318,8.5318,33.3511,5.0063,19.8171,12.6600,94.0000

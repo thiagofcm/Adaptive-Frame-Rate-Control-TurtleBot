@@ -1,0 +1,2 @@
+model,model_type,pct_frames_low,pct_frames_low_std,pct_frames_moderate,pct_frames_moderate_std,pct_frames_high,pct_frames_high_std,n_frames_low,n_frames_low_std,n_frames_moderate,n_frames_moderate_std,n_frames_high,n_frames_high_std,pct_time_low,pct_time_low_std,pct_time_moderate,pct_time_moderate_std,pct_time_high,pct_time_high_std,success_rate
+adaptive_fps_02-10-15-49-38_fc_0.01_model,zero_shot,22.2092,7.4654,49.7899,11.4359,28.0010,13.8938,25.3191,11.5610,54.6809,11.2947,36.9149,30.5022,46.1616,6.7920,35.7539,6.4724,18.0845,10.5379,94.0000

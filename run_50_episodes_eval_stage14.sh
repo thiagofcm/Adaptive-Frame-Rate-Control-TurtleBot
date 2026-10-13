@@ -18,12 +18,12 @@ set -e
 SESSION="eval_stage14_batch"
 WORKSPACE="/home/turtlebot3_drlnav"
 EPISODES="${EPISODES:-50}"
-EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval_stage14_50ep}"
+EVAL_ROOT="${EVAL_ROOT:-$WORKSPACE/AdaptiveFPS/eval_stage14_50ep_seed_1000}"
 FRAME_COST="${FRAME_COST:-0.00}"
 BUDGET="${BUDGET:-450}"
 # Seed of the randomized OB1/OB2 (corridor_random_obstacle plugin). Gazebo is launched fresh for every
 # configuration, so each one sees the same obstacle realization in episode 1, 2, ...
-OBSTACLE_SEED="${OBSTACLE_SEED:-1}"
+OBSTACLE_SEED="${OBSTACLE_SEED:-1000}"
 
 # Every tmux session the Stage 14 scripts use. Any of them still running would attach a second
 # environment/goals node to the same Gazebo world and corrupt the results.
@@ -38,11 +38,11 @@ STAGE14_SESSIONS=("$SESSION" "adaptivefps_stage14")
 # ============================================================
 
 EVALS=(
-    # "fps:10"
-    # "fps:5"
-    # "fps:1"
-    # "fps:0.5"
-    # "fps:0.2"
+    "fps:10"
+    "fps:5"
+    "fps:1"
+    "fps:0.5"
+    "fps:0.2"
     "model:AdaptiveFPS/runs/adaptive_fps_turtlebot_03-10-22-18-31/model.pt"
 )
 

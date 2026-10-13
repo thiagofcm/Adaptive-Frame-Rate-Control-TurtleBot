@@ -1,0 +1,43 @@
+{
+  "episode": 41,
+  "policy_type": "adaptive",
+  "environment_fps_choices": [
+    0.2,
+    0.5,
+    1.0,
+    5.0,
+    10.0
+  ],
+  "initial_current_fps": 10.0,
+  "initial_obs_interval": 5,
+  "final_current_fps": 1.0,
+  "final_obs_interval": 50,
+  "n_steps": 707,
+  "episode_return": -9.076351821422566,
+  "fresh_observations": 169,
+  "native_scans": 3539,
+  "outcome": 4,
+  "outcome_str": "TIMEOUT",
+  "success": false,
+  "mean_fps": 3.9464285714285716,
+  "causal_ticks": 168,
+  "causal_fps_action_counts": {
+    "5.0": 124,
+    "1.0": 42,
+    "0.5": 2
+  },
+  "policy_obs_dim": 43,
+  "policy_obs_layout": "retained_scan[0:40], fps_ratio, obs_age_ratio, frame_ratio",
+  "frame_budget": 450,
+  "frame_cost": 0.0,
+  "model_path": "/home/turtlebot3_drlnav/Adaptive_Policies_SimpleEnv/models/corridor_dynamic_chase_random/adaptive_fps_02-10-15-49-40_fc_0.03/model.pt",
+  "lstm_hidden_size": 64,
+  "checkpoint_env_id": "TurtleBot_VarScanRate",
+  "checkpoint_scene": "corridor_dynamic_chase_random",
+  "checkpoint_budget": 450,
+  "checkpoint_budget_stored": false,
+  "checkpoint_frame_cost": 0.03,
+  "checkpoint_gazebo_stage": "not applicable",
+  "checkpoint_init": "not recorded",
+  "checkpoint_resumed_from": "not recorded"
+}
