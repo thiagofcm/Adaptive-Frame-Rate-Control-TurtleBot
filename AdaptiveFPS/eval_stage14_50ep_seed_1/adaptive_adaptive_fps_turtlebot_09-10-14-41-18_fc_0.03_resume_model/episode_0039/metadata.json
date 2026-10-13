@@ -1,0 +1,40 @@
+{
+  "episode": 39,
+  "policy_type": "adaptive",
+  "environment_fps_choices": [
+    0.2,
+    0.5,
+    1.0,
+    5.0,
+    10.0
+  ],
+  "initial_current_fps": 10.0,
+  "initial_obs_interval": 5,
+  "final_current_fps": 1.0,
+  "final_obs_interval": 50,
+  "n_steps": 398,
+  "episode_return": 21.333875252008436,
+  "fresh_observations": 112,
+  "native_scans": 2017,
+  "outcome": 1,
+  "outcome_str": "SUCCESS",
+  "success": true,
+  "mean_fps": 4.344144144144144,
+  "causal_ticks": 111,
+  "causal_fps_action_counts": {
+    "1.0": 17,
+    "5.0": 93,
+    "0.2": 1
+  },
+  "policy_obs_dim": 43,
+  "policy_obs_layout": "retained_scan[0:40], fps_ratio, obs_age_ratio, frame_ratio",
+  "frame_budget": 450,
+  "frame_cost": 0.03,
+  "model_path": "/home/turtlebot3_drlnav/AdaptiveFPS/runs/stage14/adaptive_fps_turtlebot_09-10-14-41-18_fc_0.03_resume/model.pt",
+  "lstm_hidden_size": 64,
+  "checkpoint_env_id": "unknown",
+  "checkpoint_scene": "stage14",
+  "checkpoint_budget": 450,
+  "checkpoint_budget_stored": true,
+  "checkpoint_frame_cost": 0.03
+}

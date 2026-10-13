@@ -38,12 +38,12 @@ STAGE14_SESSIONS=("$SESSION" "adaptivefps_stage14")
 # ============================================================
 
 EVALS=(
-    "fps:10"
-    "fps:5"
-    "fps:1"
-    "fps:0.5"
-    "fps:0.2"
-    "model:AdaptiveFPS/runs/adaptive_fps_turtlebot_03-10-22-18-31/model.pt"
+    # "fps:10"
+    # "fps:5"
+    # "fps:1"
+    # "fps:0.5"
+    # "fps:0.2"
+    "model:AdaptiveFPS/runs/stage14/adaptive_fps_turtlebot_09-10-14-41-18_fc_0.03_resume/model.pt"
 )
 
 setup_cmd="cd $WORKSPACE && \
